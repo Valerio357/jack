@@ -1,0 +1,4 @@
+files:
+  - source: /Jack/Localizable.xcstrings
+    translation: /Jack/Localizable.xcstrings
+    multilingual: 1
