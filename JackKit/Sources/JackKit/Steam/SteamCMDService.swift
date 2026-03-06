@@ -275,7 +275,10 @@ public final class SteamCMDService: @unchecked Sendable {
             "+quit"
         ]
 
-        let (exitCode, fullOutput) = try await runSteamCMD(steamArgs: steamArgs, onOutput: onProgress)
+        // 4-hour timeout for large game downloads (e.g. 100+ GB)
+        let (exitCode, fullOutput) = try await runSteamCMD(
+            steamArgs: steamArgs, onOutput: onProgress, timeout: 14400
+        )
 
         if fullOutput.contains("Cached credentials not found") || fullOutput.contains("password:") {
             throw SteamCMDError.loginFailed(
@@ -283,7 +286,11 @@ public final class SteamCMDService: @unchecked Sendable {
             )
         }
 
-        if exitCode != 0 && !fullOutput.contains("Success") {
+        // SteamCMD exits 0 on success but may also print "Success" with non-zero exit
+        // Also handle "fully installed" for already-complete games
+        if exitCode != 0
+            && !fullOutput.contains("Success")
+            && !fullOutput.contains("fully installed") {
             throw SteamCMDError.installFailed(extractLoginError(from: fullOutput))
         }
     }
@@ -306,7 +313,8 @@ public final class SteamCMDService: @unchecked Sendable {
         ) else { return nil }
 
         let excludePatterns = ["unins", "setup", "install", "redist", "vcredist",
-                               "dxsetup", "dotnet", "crash", "report", "ue4prereq",
+                               "dxsetup", "dotnet", "crashreport", "crashhandler",
+                               "crashsender", "report", "ue4prereq",
                                "launch", "updater", "unarc"]
 
         var candidates: [(url: URL, size: Int)] = []
@@ -340,7 +348,8 @@ public final class SteamCMDService: @unchecked Sendable {
 
     private func runSteamCMD(
         steamArgs: [String],
-        onOutput: (@Sendable (String) -> Void)? = nil
+        onOutput: (@Sendable (String) -> Void)? = nil,
+        timeout: TimeInterval = 300
     ) async throws -> (Int32, String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -364,6 +373,7 @@ public final class SteamCMDService: @unchecked Sendable {
         let prompts = Self.interactivePrompts
         let outputTask = Task.detached {
             var accumulated = ""
+            var alreadyKilled = false
             while true {
                 let data = handle.availableData
                 if data.isEmpty { break }
@@ -371,22 +381,23 @@ public final class SteamCMDService: @unchecked Sendable {
                     accumulated += chunk
                     onOutput?(chunk)
 
-                    // Kill entire process group immediately if SteamCMD wants interactive input.
-                    // process.terminate() sends SIGTERM which bash may not forward to steamcmd child.
-                    // SIGKILL to the process group ensures everything dies.
-                    if prompts.contains(where: { accumulated.contains($0) }) {
-                        kill(-pid, SIGKILL)  // negative PID = process group
-                        kill(pid, SIGKILL)   // also direct, in case no group
+                    // Only check the new chunk for interactive prompts (not the
+                    // entire accumulated output) to avoid false positives after
+                    // a prompt string appeared earlier in a non-blocking context.
+                    if !alreadyKilled, prompts.contains(where: { chunk.contains($0) }) {
+                        alreadyKilled = true
+                        kill(-pid, SIGKILL)
+                        kill(pid, SIGKILL)
                     }
                 }
             }
             return accumulated
         }
 
-        // Wait for exit with 5-minute timeout
+        // Wait for exit — timeout is configurable (short for login, long for downloads)
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             process.terminationHandler = { _ in continuation.resume() }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 300) {
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 kill(-pid, SIGKILL)
                 kill(pid, SIGKILL)
             }

@@ -270,6 +270,7 @@ struct SteamLibraryView: View {
                     ),
                     bottle: bottle
                 )
+                .id(game.appid)
             } else {
                 emptyDetailView
             }
@@ -543,6 +544,10 @@ struct GameDetailPanel: View {
         .onAppear {
             windowedMode = UserDefaults.standard.bool(forKey: "windowed_\(game.appid)")
             goldbergEnabled = UserDefaults.standard.bool(forKey: "goldberg_\(game.appid)")
+            launchError = nil
+        }
+        .onChange(of: game.appid) {
+            launchError = nil
         }
         .confirmationDialog(
             "Uninstall \(game.name)?",
@@ -1016,12 +1021,22 @@ struct GameDetailPanel: View {
 
             let exeDir = exeURL.deletingLastPathComponent()
 
+            // Always write steam_appid.txt at the game root (some launchers check here)
+            try? "\(appID)\n".write(
+                to: installDir.appending(path: "steam_appid.txt"),
+                atomically: true, encoding: .utf8
+            )
+
             // --- Goldberg Steam Emulator (DRM bypass) ---
+            // Track whether SteamStub DRM is still active (variant we can't strip).
+            // If so, Steam must remain running for the stub to authenticate.
+            var steamStubActive = false
+
             if goldbergEnabled {
                 do {
                     try await GoldbergService.shared.ensureInstalled()
                     try GoldbergService.shared.apply(
-                        to: exeDir, appID: appID,
+                        to: exeDir, gameDir: installDir, appID: appID,
                         username: username.isEmpty ? "Player" : username,
                         steamID: UserDefaults.standard.string(forKey: "steamUserID") ?? ""
                     )
@@ -1031,16 +1046,20 @@ struct GameDetailPanel: View {
                 }
 
                 // Strip SteamStub DRM from exe (Goldberg only replaces the API layer,
-                // SteamStub is a separate DRM wrapper on the exe itself)
+                // SteamStub is a separate DRM wrapper on the exe itself).
+                // Uses Steamless CLI via Mono for full variant support.
                 do {
                     try await SteamlessService.shared.stripIfNeeded(exe: exeURL)
                 } catch {
                     launchError = "Steamless: \(error.localizedDescription)"
                     return
                 }
+
+                steamStubActive = SteamlessService.shared.hasSteamStub(exe: exeURL)
+                    && !SteamlessService.shared.isStripped(exe: exeURL)
             } else {
                 // Restore originals if Goldberg was previously active
-                GoldbergService.shared.remove(from: exeDir)
+                GoldbergService.shared.remove(from: exeDir, gameDir: installDir)
                 SteamlessService.shared.restore(exe: exeURL)
                 // Write steam_appid.txt for games with light DRM
                 try? "\(appID)\n".write(
@@ -1090,9 +1109,17 @@ struct GameDetailPanel: View {
                             bottle: bottle
                         )
                     }
-                    // Mark as done so we don't re-run every launch
-                    try? "".write(to: redistMarker, atomically: true, encoding: .utf8)
                 }
+                // UE4 prerequisite installer (VC++ 2015-2019 runtime)
+                let ue4Prereq = installDir.appending(path: "Engine/Extras/Redist/en-us/UE4PrereqSetup_x64.exe")
+                if FileManager.default.fileExists(atPath: ue4Prereq.path(percentEncoded: false)) {
+                    _ = try? await Wine.runWine(
+                        [ue4Prereq.path(percentEncoded: false), "/quiet", "/norestart"],
+                        bottle: bottle
+                    )
+                }
+                // Mark as done so we don't re-run every launch
+                try? "".write(to: redistMarker, atomically: true, encoding: .utf8)
             }
 
             // --- DXVK ---
@@ -1149,28 +1176,31 @@ struct GameDetailPanel: View {
                 }
             }
 
-            // --- Goldberg: remove steam:// protocol handler to prevent game from relaunching via steam.exe ---
-            if goldbergEnabled {
-                _ = try? await Wine.runWine([
-                    "reg", "delete", "HKCU\\Software\\Classes\\steam", "/f"
-                ], bottle: bottle)
-                _ = try? await Wine.runWine([
-                    "reg", "delete", "HKCU\\Software\\Classes\\steamlink", "/f"
-                ], bottle: bottle)
-                // Remove TempAppCmdLine that points to steam.exe
-                _ = try? await Wine.runWine([
-                    "reg", "delete", "HKLM\\Software\\Valve\\Steam", "/v", "TempAppCmdLine", "/f"
-                ], bottle: bottle)
-                _ = try? await Wine.runWine([
-                    "reg", "delete", "HKLM\\Software\\Wow6432Node\\Valve\\Steam", "/v", "TempAppCmdLine", "/f"
-                ], bottle: bottle)
+            // --- Goldberg: kill Steam processes without nuking wineserver ---
+            // Skip if SteamStub is still active — the stub needs a running Steam
+            // client to authenticate before the game can start.
+            if goldbergEnabled && !steamStubActive {
+                let killProc = Process()
+                killProc.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+                killProc.arguments = ["-9", "-f", "steam\\.exe|steamwebhelper\\.exe|steamservice\\.exe"]
+                try? killProc.run()
+                killProc.waitUntilExit()
+                try? await Task.sleep(for: .milliseconds(500))
             }
 
             // --- Launch ---
-            let steamEnv: [String: String] = [
+            var steamEnv: [String: String] = [
                 "SteamAppId": "\(appID)",
                 "SteamGameId": "\(appID)"
             ]
+            // When using Goldberg, block steam.exe from loading —
+            // but NOT if SteamStub is active (it needs Steam to authenticate)
+            if goldbergEnabled && !steamStubActive {
+                let existing = steamEnv["WINEDLLOVERRIDES"] ?? ""
+                steamEnv["WINEDLLOVERRIDES"] = existing.isEmpty
+                    ? "steam.exe=d;steamwebhelper.exe=d"
+                    : "\(existing);steam.exe=d;steamwebhelper.exe=d"
+            }
 
             do {
                 for await _ in try Wine.runWineProcess(

@@ -2,25 +2,27 @@
 //  SteamlessService.swift
 //  JackKit
 //
-//  Native SteamStub DRM stripper — removes the SteamStub wrapper from game
-//  executables directly via PE manipulation.  No Wine or .NET dependency.
+//  SteamStub DRM stripper — removes the SteamStub wrapper from game executables.
 //
-//  SteamStub adds a ".bind" section to the PE that runs before the real entry
-//  point, checks for a running Steam client, and optionally encrypts the
-//  original code section.  Goldberg replaces steam_api.dll but can't help if
-//  the stub itself blocks launch.  This service patches the PE entry point
-//  back to the original and decrypts the code section when needed.
+//  Uses the real Steamless CLI (by atom0s) via Mono to handle all SteamStub variants
+//  including encrypted code sections. Falls back to native PE patching for simple
+//  variants when Mono is not available.
 //
-//  Supports SteamStub variant 3.x (32-bit and 64-bit).
+//  SteamStub adds a ".bind" section to the PE that runs before the real entry point,
+//  verifies Steam ownership, and optionally encrypts the original code section.
+//  Goldberg replaces steam_api.dll but can't help if the stub itself blocks launch.
 //
 
 import Foundation
+import os.log
 
 public enum SteamlessError: LocalizedError {
     case notSteamStub
     case unsupportedVariant
     case corruptHeader
     case unpackFailed(String)
+    case monoNotInstalled
+    case downloadFailed
 
     public var errorDescription: String? {
         switch self {
@@ -28,50 +30,122 @@ public enum SteamlessError: LocalizedError {
         case .unsupportedVariant:  return "Unsupported SteamStub variant."
         case .corruptHeader:       return "Corrupt SteamStub header."
         case .unpackFailed(let d): return "SteamStub strip failed: \(d)"
+        case .monoNotInstalled:    return "Mono runtime is required to strip SteamStub DRM. Install it with: brew install mono"
+        case .downloadFailed:      return "Failed to download Steamless CLI."
         }
     }
 }
 
 public final class SteamlessService: @unchecked Sendable {
     public static let shared = SteamlessService()
+
+    /// Where Steamless CLI is stored
+    private let steamlessDir = BottleData.steamCMDDir.appending(path: "Steamless")
+    private let steamlessVersion = "v3.1.0.5"
+    private let steamlessDownloadURL = "https://github.com/atom0s/Steamless/releases/download/v3.1.0.5/Steamless.v3.1.0.5.-.by.atom0s.zip"
+
+    private var cliExe: URL { steamlessDir.appending(path: "Steamless.CLI.exe") }
+
     private init() {}
 
     // MARK: - Public API
 
-    /// Strips SteamStub DRM from a game executable (native PE patching).
-    /// Backs up the original as `.steamstub_backup`.  Skips if already stripped
-    /// or if no SteamStub is detected.
+    /// Returns true if the Mono runtime is available.
+    public var isMonoInstalled: Bool {
+        FileManager.default.fileExists(atPath: monoPath)
+    }
+
+    /// Returns true if Steamless CLI is downloaded and ready.
+    public var isSteamlessInstalled: Bool {
+        FileManager.default.fileExists(atPath: cliExe.path(percentEncoded: false))
+    }
+
+    /// Download and extract the Steamless CLI tool.
+    public func ensureInstalled() async throws {
+        if isSteamlessInstalled { return }
+
+        let fm = FileManager.default
+        try fm.createDirectory(at: steamlessDir, withIntermediateDirectories: true)
+
+        guard let url = URL(string: steamlessDownloadURL) else { throw SteamlessError.downloadFailed }
+
+        let (tempZip, response) = try await URLSession.shared.download(from: url)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw SteamlessError.downloadFailed
+        }
+
+        // Extract
+        let extractDir = steamlessDir.appending(path: "tmp_extract")
+        try? fm.removeItem(at: extractDir)
+        try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
+
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        unzip.arguments = ["-o", "-q", tempZip.path(percentEncoded: false),
+                           "-d", extractDir.path(percentEncoded: false)]
+        try unzip.run()
+        unzip.waitUntilExit()
+        try? fm.removeItem(at: tempZip)
+
+        guard unzip.terminationStatus == 0 else { throw SteamlessError.downloadFailed }
+
+        // Copy entire contents preserving structure (Plugins/ subfolder must exist)
+        if let enumerator = fm.enumerator(at: extractDir, includingPropertiesForKeys: [.isRegularFileKey]) {
+            while let fileURL = enumerator.nextObject() as? URL {
+                let attrs = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
+                guard attrs?.isRegularFile == true else { continue }
+                // Preserve relative path (e.g. Plugins/foo.dll)
+                let relative = fileURL.path(percentEncoded: false)
+                    .replacingOccurrences(of: extractDir.path(percentEncoded: false) + "/", with: "")
+                let dest = steamlessDir.appending(path: relative)
+                try? fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? fm.removeItem(at: dest)
+                try fm.copyItem(at: fileURL, to: dest)
+            }
+        }
+
+        try? fm.removeItem(at: extractDir)
+
+        guard isSteamlessInstalled else { throw SteamlessError.downloadFailed }
+    }
+
+    /// Strips SteamStub DRM from a game executable.
+    /// Uses Steamless CLI via Mono for full variant support.
+    /// Backs up the original as `.steamstub_backup`.
+    /// Skips if already stripped or if no SteamStub is detected.
     @discardableResult
     public func stripIfNeeded(exe: URL) async throws -> URL {
         let fm = FileManager.default
-        let backupURL = backupURL(for: exe)
+        let backup = backupURL(for: exe)
 
         // Already stripped in a previous run
-        if fm.fileExists(atPath: backupURL.path(percentEncoded: false)) {
+        if fm.fileExists(atPath: backup.path(percentEncoded: false)) {
             return exe
         }
 
-        guard var data = try? Data(contentsOf: exe, options: []) else {
+        // Check for .bind section
+        guard hasSteamStub(exe: exe) else { return exe }
+
+        // Try Steamless CLI via Mono (handles ALL variants including encrypted)
+        if isMonoInstalled {
+            try await ensureInstalled()
+            try await runSteamlessCLI(exe: exe, backup: backup)
             return exe
         }
 
-        // Locate .bind section
-        guard let bindInfo = findBindSection(in: data) else {
-            return exe // No SteamStub
-        }
+        // Fallback: native PE patching (only simple C0DEC0DE variants)
+        guard var data = try? Data(contentsOf: exe, options: []) else { return exe }
+        guard let bindInfo = findBindSection(in: data) else { return exe }
 
-        // Parse stub header and patch — skip silently if variant is unrecognized
-        // (Goldberg's fake steam_api should still satisfy the stub's API calls)
         do {
             try patchSteamStub(data: &data, bind: bindInfo)
         } catch SteamlessError.unsupportedVariant {
-            return exe
+            // Can't strip without Mono
+            throw SteamlessError.monoNotInstalled
         }
 
-        // Write patched exe: backup original first
-        try fm.copyItem(at: exe, to: backupURL)
+        try fm.copyItem(at: exe, to: backup)
         try data.write(to: exe, options: .atomic)
-
         return exe
     }
 
@@ -91,6 +165,82 @@ public final class SteamlessService: @unchecked Sendable {
         )
     }
 
+    /// Returns true if the exe has a `.bind` section (SteamStub DRM present).
+    public func hasSteamStub(exe: URL) -> Bool {
+        guard let data = try? Data(contentsOf: exe, options: .mappedIfSafe),
+              data.count > 512 else { return false }
+        return findBindSection(in: data) != nil
+    }
+
+    // MARK: - Steamless CLI via Mono
+
+    /// Path to mono binary (brew install mono)
+    private var monoPath: String {
+        // Check common mono locations
+        for path in ["/opt/homebrew/bin/mono", "/usr/local/bin/mono", "/usr/bin/mono"] {
+            if FileManager.default.fileExists(atPath: path) { return path }
+        }
+        return "/opt/homebrew/bin/mono"
+    }
+
+    private func runSteamlessCLI(exe: URL, backup: URL) async throws {
+        let fm = FileManager.default
+
+        // Backup original before stripping
+        try fm.copyItem(at: exe, to: backup)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: monoPath)
+        process.arguments = [cliExe.path(percentEncoded: false), exe.path(percentEncoded: false)]
+        process.currentDirectoryURL = steamlessDir
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        try process.run()
+
+        // Wait with timeout (60 seconds for large executables)
+        let pid = process.processIdentifier
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            process.terminationHandler = { _ in continuation.resume() }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 60) {
+                if process.isRunning {
+                    kill(pid, SIGKILL)
+                }
+            }
+        }
+
+        let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: outputData, encoding: .utf8) ?? ""
+
+        // Steamless saves as exe.unpacked.exe
+        let unpackedPath = exe.path(percentEncoded: false) + ".unpacked.exe"
+
+        if process.terminationStatus == 0,
+           fm.fileExists(atPath: unpackedPath) {
+            // Replace original with unpacked version
+            try fm.removeItem(at: exe)
+            try fm.moveItem(atPath: unpackedPath, toPath: exe.path(percentEncoded: false))
+        } else {
+            // Restore backup on failure
+            try? fm.removeItem(at: exe)
+            try? fm.moveItem(at: backup, to: exe)
+            try? fm.removeItem(atPath: unpackedPath)
+
+            if output.contains("Successfully unpacked") {
+                // Output says success but file is missing — shouldn't happen
+                throw SteamlessError.unpackFailed("Unpacked file not found")
+            } else {
+                throw SteamlessError.unpackFailed(
+                    output.components(separatedBy: .newlines)
+                        .last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+                    ?? "Steamless exited with code \(process.terminationStatus)"
+                )
+            }
+        }
+    }
+
     // MARK: - Internals
 
     private func backupURL(for exe: URL) -> URL {
@@ -101,7 +251,7 @@ public final class SteamlessService: @unchecked Sendable {
     // MARK: - PE Parsing Helpers
 
     private struct BindSectionInfo {
-        let sectionHeaderOffset: Int   // offset of the .bind section header in file
+        let sectionHeaderOffset: Int
         let virtualAddress: UInt32
         let virtualSize: UInt32
         let rawDataOffset: UInt32
@@ -115,12 +265,9 @@ public final class SteamlessService: @unchecked Sendable {
 
     private func findBindSection(in data: Data) -> BindSectionInfo? {
         guard data.count > 512 else { return nil }
-        // MZ
         guard data[0] == 0x4D, data[1] == 0x5A else { return nil }
-        // PE offset
         let peOffset = readUInt32(data, at: 0x3C)
         guard peOffset > 0, Int(peOffset) + 4 < data.count else { return nil }
-        // PE\0\0
         guard data[Int(peOffset)] == 0x50, data[Int(peOffset) + 1] == 0x45,
               data[Int(peOffset) + 2] == 0x00, data[Int(peOffset) + 3] == 0x00 else { return nil }
 
@@ -131,10 +278,9 @@ public final class SteamlessService: @unchecked Sendable {
         let sizeOfOptionalHeader = Int(readUInt16(data, at: coffOffset + 16))
         let optionalHeaderOffset = coffOffset + 20
 
-        // Determine PE32 vs PE32+
         guard optionalHeaderOffset + 2 <= data.count else { return nil }
         let magic = readUInt16(data, at: optionalHeaderOffset)
-        let is64 = magic == 0x020B // PE32+ = 64-bit
+        let is64 = magic == 0x020B
 
         let sectionStart = optionalHeaderOffset + sizeOfOptionalHeader
 
@@ -161,40 +307,9 @@ public final class SteamlessService: @unchecked Sendable {
         return nil
     }
 
-    // MARK: - SteamStub v3.x Header
-
-    // The .bind section raw data starts with the stub header.
-    // First 4 bytes = XorKey.  Bytes 4..8 XOR'd with XorKey = signature.
-    //
-    // Variant 3.1 64-bit header layout (fields after XOR decryption):
-    //   0x00  UInt32  XorKey
-    //   0x04  UInt32  Signature          (0xC0DEC0DE)
-    //   0x08  UInt64  ImageBase
-    //   0x10  UInt32  AddressOfEntryPoint (stub EP)
-    //   0x14  UInt32  BindSectionOffset
-    //   0x18  UInt32  Unknown0
-    //   0x1C  UInt32  OriginalEntryPoint  <-- what we need
-    //   0x20  UInt32  Unknown1
-    //   0x24  UInt32  PayloadSize
-    //   0x28  UInt32  DRMPDllOffset
-    //   0x2C  UInt32  DRMPDllSize
-    //   0x30  UInt32  SteamAppId
-    //   0x34  UInt32  Flags               bit 0 = code encrypted
-    //   0x38  UInt32  BindSectionVirtualSize
-    //   0x3C  UInt32  Unknown2
-    //   0x40  UInt64  CodeSectionVirtualAddress
-    //   0x48  UInt64  CodeSectionRawSize
-    //   0x50  UInt32  XorKey2             (for code decryption)
-    //
-    // Variant 3.1 32-bit: same layout but ImageBase is UInt32 (4 bytes),
-    //   so OEP shifts to 0x18, Flags to 0x30, etc.
-    //
-    // Variant 3.0: similar but slightly different offsets.  We detect by
-    //   checking if the signature matches at the expected position.
+    // MARK: - Native SteamStub v3.x Patcher (fallback)
 
     private func patchSteamStub(data: inout Data, bind: BindSectionInfo) throws {
-        // The SteamStub header is at the PE entry point file offset (NOT at
-        // the start of .bind — the section begins with stub code/data).
         let epRVA = readUInt32(data, at: bind.optionalHeaderOffset + 16)
         let hdrOff = Int(bind.rawDataOffset) + (Int(epRVA) - Int(bind.virtualAddress))
         let rawEnd = Int(bind.rawDataOffset) + Int(bind.rawDataSize)
@@ -203,10 +318,7 @@ public final class SteamlessService: @unchecked Sendable {
             throw SteamlessError.corruptHeader
         }
 
-        // Read XorKey (first 4 bytes at EP, NOT XOR'd)
         let xorKey = readUInt32(data, at: hdrOff)
-
-        // Verify signature at offset 4
         let sigRaw = readUInt32(data, at: hdrOff + 4)
         let signature = sigRaw ^ xorKey
         guard signature == 0xC0DE_C0DE else {
@@ -220,14 +332,12 @@ public final class SteamlessService: @unchecked Sendable {
         let xorKey2Offset: Int
 
         if bind.is64Bit {
-            // 64-bit: ImageBase is UInt64 at 0x08 (8 bytes)
             oepOffset = hdrOff + 0x1C
             flagsOffset = hdrOff + 0x34
             codeSectionVAOffset = hdrOff + 0x40
             codeSectionSizeOffset = hdrOff + 0x48
             xorKey2Offset = hdrOff + 0x50
         } else {
-            // 32-bit: ImageBase is UInt32 at 0x08 (4 bytes), shifts everything by -4
             oepOffset = hdrOff + 0x18
             flagsOffset = hdrOff + 0x30
             codeSectionVAOffset = hdrOff + 0x3C
@@ -235,20 +345,14 @@ public final class SteamlessService: @unchecked Sendable {
             xorKey2Offset = hdrOff + 0x44
         }
 
-        // Decrypt OEP
         let oepEncrypted = readUInt32(data, at: oepOffset)
         let originalEntryPoint = oepEncrypted ^ xorKey
+        guard originalEntryPoint != 0 else { throw SteamlessError.corruptHeader }
 
-        guard originalEntryPoint != 0 else {
-            throw SteamlessError.corruptHeader
-        }
-
-        // Read flags
         let flagsEncrypted = readUInt32(data, at: flagsOffset)
         let flags = flagsEncrypted ^ xorKey
         let codeEncrypted = (flags & 1) != 0
 
-        // Decrypt code section if needed
         if codeEncrypted {
             try decryptCodeSection(
                 data: &data, bind: bind,
@@ -259,16 +363,11 @@ public final class SteamlessService: @unchecked Sendable {
             )
         }
 
-        // Patch PE AddressOfEntryPoint in optional header
-        // For PE32: offset 0x10 from start of optional header (16)
-        // For PE32+: same offset 0x10 (16)
         let epOffset = bind.optionalHeaderOffset + 16
         writeUInt32(&data, at: epOffset, value: originalEntryPoint)
 
-        // Zero out the .bind section characteristics (mark it as discardable/unused)
-        // Section characteristics is at offset 36 in the section header
         let charOffset = bind.sectionHeaderOffset + 36
-        writeUInt32(&data, at: charOffset, value: 0x0200_0000) // IMAGE_SCN_MEM_DISCARDABLE
+        writeUInt32(&data, at: charOffset, value: 0x0200_0000)
     }
 
     private func decryptCodeSection(
@@ -287,10 +386,8 @@ public final class SteamlessService: @unchecked Sendable {
         }
 
         let xorKey2 = readUInt32(data, at: xorKey2Offset) ^ xorKey
-
         guard codeSize > 0, codeSize < UInt64(data.count) else { return }
 
-        // Find the file offset of the code section by matching its VA
         let peOffset = Int(readUInt32(data, at: 0x3C))
         let coffOffset = peOffset + 4
         let numSections = Int(readUInt16(data, at: coffOffset + 2))
@@ -306,7 +403,6 @@ public final class SteamlessService: @unchecked Sendable {
                 let decryptLen = min(Int(codeSize), data.count - secRawOff)
                 guard decryptLen > 0 else { break }
 
-                // XOR decrypt in 4-byte blocks
                 var pos = secRawOff
                 let end = secRawOff + decryptLen
                 while pos + 4 <= end {

@@ -18,7 +18,23 @@
       "Bash(curl:*)",
       "Bash(python3:*)",
       "Bash(sips:*)",
-      "Bash(__NEW_LINE_00c4d5851a98babd__:*)"
+      "Bash(__NEW_LINE_00c4d5851a98babd__:*)",
+      "Bash(GAMES_DIR=\"$HOME/Library/Containers/com.isaacmarovitz.Whisky/Data/Library/Application Support/com.isaacmarovitz.Whisky/SteamCMD/games\")",
+      "Read(//Users/valeriodomenici/Projects/wine-steam-ed/**)",
+      "Read(//Users/valeriodomenici/Projects/wine-steam-ed/$GAMES_DIR/**)",
+      "Read(//Users/valeriodomenici/Projects/wine-steam-ed/$HOME/Library/Containers/com.isaacmarovitz.Whisky/Data/Library/Application Support/com.isaacmarovitz.Whisky/SteamCMD/**)",
+      "Read(//Users/valeriodomenici/Projects/wine-steam-ed/$HOME/**)",
+      "Bash(GAME_DIR=\"$HOME/Library/Containers/com.isaacmarovitz.Jack/SteamCMD/games/678950\" echo \"=== steam_api DLLs ===\")",
+      "Read(//Users/valeriodomenici/Projects/wine-steam-ed/$HOME/Library/Containers/com.isaacmarovitz.Jack/SteamCMD/**)",
+      "Bash(GAME_DIR=\"$HOME/Library/Containers/com.isaacmarovitz.Jack/SteamCMD/games/678950\" echo \"=== all DLLs ===\")",
+      "Bash(cat $CACHE:*)",
+      "Bash(GAME_DIR=\"$HOME/Library/Containers/com.isaacmarovitz.Jack/SteamCMD/games/1378990\" echo \"=== Dir exists ===\")",
+      "Bash(rm:*)",
+      "Bash(cp -R /tmp/JackBuild/Build/Products/Release/Jack.app /tmp/JackDMG/)",
+      "Bash(codesign --force --deep --sign - /tmp/JackDMG/Jack.app)",
+      "Bash(ln -s /Applications /tmp/JackDMG/Applications)",
+      "Bash(hdiutil create -volname \"Jack \\(Beta\\)\" -srcfolder /tmp/JackDMG -ov -format UDZO \"$HOME/Desktop/Jack-beta.dmg\")",
+      "Read(//Users/valeriodomenici/Projects/wine-steam-ed/$HOME/Desktop/**)"
     ]
   }
 }
