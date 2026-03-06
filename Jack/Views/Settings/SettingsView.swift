@@ -45,9 +45,9 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("settings.general") {
-                    Toggle("Termina i processi Wine quando Jack chiude", isOn: $killOnTerminate)
+                    Toggle("Terminate Wine processes when Jack closes", isOn: $killOnTerminate)
                     ActionView(
-                        text: "Percorso bottiglie predefinito",
+                        text: "Default bottle path",
                         subtitle: defaultBottleLocation.prettyPath(),
                         actionName: "create.browse"
                     ) {
@@ -65,28 +65,28 @@ struct SettingsView: View {
                     }
                 }
                 Section("settings.updates") {
-                    Toggle("Controlla automaticamente aggiornamenti di Jack", isOn: $whiskyUpdate)
-                    Toggle("Controlla automaticamente aggiornamenti di JackWine", isOn: $checkJackWineUpdates)
+                    Toggle("Automatically check for Jack updates", isOn: $whiskyUpdate)
+                    Toggle("Automatically check for JackWine updates", isOn: $checkJackWineUpdates)
                 }
                 Section("Steam") {
                     if steamUserID.isEmpty {
-                        Text("Non connesso")
+                        Text("Not connected")
                             .foregroundStyle(.secondary)
                     } else {
                         LabeledContent("Steam ID", value: steamUserID)
                     }
 
-                    TextField("Username Steam", text: $steamUsername)
+                    TextField("Steam Username", text: $steamUsername)
                         .textContentType(.username)
 
                     SecureField("Password", text: $steamPassword)
                         .textContentType(.password)
 
-                    TextField("Codice Steam Guard (5 caratteri)", text: $steamGuardCode)
+                    TextField("Steam Guard Code (5 characters)", text: $steamGuardCode)
                         .textContentType(.oneTimeCode)
 
                     HStack {
-                        Button(steamUsername.isEmpty ? "Accedi" : "Testa Login") {
+                        Button(steamUsername.isEmpty ? "Sign In" : "Test Login") {
                             testLogin()
                         }
                         .disabled(steamUsername.isEmpty || steamPassword.isEmpty || steamGuardCode.isEmpty || loginStatus == .testing)
@@ -108,35 +108,36 @@ struct SettingsView: View {
                                 .font(.caption)
                                 .lineLimit(3)
                         }
+
                     }
 
                     if !steamUserID.isEmpty {
-                        Button("Scollega account") {
+                        Button("Disconnect account") {
                             steamUserID = ""
                             steamUsername = ""
                         }
                         .foregroundStyle(.red)
                     }
 
-                    Text("SteamCMD scarica i giochi e carica la libreria. Dopo il primo login le credenziali vengono salvate automaticamente.")
+                    Text("SteamCMD downloads games and loads your library. After the first login, credentials are saved automatically.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Section("SteamCMD") {
                     HStack {
-                        Text("Stato")
+                        Text("Status")
                         Spacer()
                         if steamCMDInstalled {
-                            Label("Installato", systemImage: "checkmark.circle.fill")
+                            Label("Installed", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(Color.jackSuccess)
                                 .font(.caption)
                         } else if isInstallingCMD {
                             HStack(spacing: 6) {
                                 ProgressView().controlSize(.mini)
-                                Text("Download…").font(.caption).foregroundStyle(.secondary)
+                                Text("Downloading…").font(.caption).foregroundStyle(.secondary)
                             }
                         } else {
-                            Button("Installa SteamCMD") {
+                            Button("Install SteamCMD") {
                                 installSteamCMD()
                             }
                             .font(.caption)
@@ -146,10 +147,10 @@ struct SettingsView: View {
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle("Impostazioni")
+            .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Fine") {
+                    Button("Done") {
                         dismiss()
                     }
                 }

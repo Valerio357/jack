@@ -438,7 +438,7 @@ public class Wine {
     public enum SteamDaemonError: LocalizedError {
         case steamExeNotFound
         public var errorDescription: String? {
-            "steam.exe non trovato nella bottiglia. Installa Steam prima."
+            "steam.exe not found in the bottle. Please install Steam first."
         }
     }
 

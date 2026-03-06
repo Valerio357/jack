@@ -1,75 +1,75 @@
 <div align="center">
 
   # Jack 🐇
-  *I tuoi giochi Steam su Mac, senza compromessi*
+  *Your Steam library on Mac, without compromise*
 
 </div>
 
-Jack è un gaming launcher per macOS che porta la tua libreria Steam su Mac tramite Wine, mostrando la compatibilità ProtonDB per ogni gioco e permettendo di avviarli direttamente.
+Jack is a macOS gaming launcher that brings your Steam library to Mac via Wine, with automatic game downloads via SteamCMD, ProtonDB compatibility ratings, and Goldberg support for Steam DRM bypass.
 
 ---
 
-## Basato su Jack
+## Based on Whisky
 
-Jack è un fork di [Jack](https://github.com/Jack-App/Jack), il launcher Wine open source per macOS scritto in SwiftUI nativo. Il codice originale di Jack è il fondamento su cui è costruita l'esperienza Steam-first di Jack.
+Jack is a fork of [Whisky](https://github.com/Whisky-App/Whisky), the open source Wine launcher for macOS written in native SwiftUI. The original Whisky codebase is the foundation on which Jack's Steam-first experience is built.
 
-> Jack è distribuito sotto licenza GNU GPL v3. Jack eredita la stessa licenza e rispetta i termini del progetto originale.
-
----
-
-## Funzionalità Jack
-
-- **Login Steam via OpenID** — accedi con il tuo account Steam in un click
-- **Libreria giochi** — vedi tutti i tuoi titoli con icone e ore di gioco
-- **Badge compatibilità ProtonDB** — Platinum / Gold / Silver / Bronze / Borked per ogni gioco
-- **Avvio diretto** — `wine steam.exe -applaunch {appid}` senza configurazione manuale
-- **Design Jack** — tema navy scuro `#0D1B2A`, accent blu elettrico `#4A90D9`, ispirato al logo del coniglio
-- **Onboarding guidato** — 3 schermate per connettere Steam e iniziare a giocare
+> Jack is distributed under the GNU GPL v3 license. Jack inherits the same license and respects the terms of the original project.
 
 ---
 
-## Requisiti di sistema
+## Features
 
-- CPU: Apple Silicon (chip M-series)
-- OS: macOS Sonoma 14.0 o successivo
-
----
-
-## Come iniziare
-
-1. Apri l'app — comparirà il wizard di onboarding al primo avvio
-2. Accedi con Steam (OpenID) o inserisci il tuo Steam ID manualmente
-3. Aggiungi la tua **Steam Web API key** in Impostazioni → Steam ([ottienila qui](https://steamcommunity.com/dev/apikey))
-4. La tua libreria si carica automaticamente con i badge di compatibilità
+- **Integrated Steam login** — username, password and Steam Guard in a single step, no manual configuration
+- **Automatic game library** — owned games are loaded via SteamCMD, no API key required
+- **ProtonDB compatibility badges** — Platinum / Gold / Silver / Bronze / Borked for each game
+- **Direct download** — install Windows games via SteamCMD without opening Steam
+- **Goldberg DRM bypass** — emulates steam_api locally for games with Steam DRM
+- **Guided onboarding** — 3 screens to connect your Steam account and start playing
 
 ---
 
-## Struttura del progetto
+## System Requirements
+
+- CPU: Apple Silicon (M-series chip)
+- OS: macOS Sonoma 14.0 or later
+
+---
+
+## Getting Started
+
+1. Open the app — the onboarding wizard will appear on first launch
+2. Enter your username, password and Steam Guard code to authenticate
+3. Your Steam library loads automatically with compatibility badges
+4. Click **Install Game** to download and **Play** to launch via Wine
+
+---
+
+## Project Structure
 
 ```
-Jack/            App principale (SwiftUI, macOS)
-JackKit/         Framework Swift (Wine, Steam API, ProtonDB)
+Jack/            Main app (SwiftUI, macOS)
+JackKit/         Swift framework (Wine, Steam, ProtonDB)
 JackCmd/         CLI companion
 JackThumbnail/   Quick Look extension
 ```
 
 ---
 
-## Crediti e ringraziamenti
+## Credits
 
-Jack non esisterebbe senza il lavoro di questi progetti:
+Jack would not exist without the work of these projects:
 
-- **[Jack](https://github.com/Jack-App/Jack)** di Isaac Marovitz — base del progetto
+- **[Whisky](https://github.com/Whisky-App/Whisky)** by Isaac Marovitz — project foundation
 - [msync](https://github.com/marzent/wine-msync) by marzent
-- [DXVK-macOS](https://github.com/Gcenx/DXVK-macOS) by Gcenx e doitsujin
+- [DXVK-macOS](https://github.com/Gcenx/DXVK-macOS) by Gcenx and doitsujin
 - [MoltenVK](https://github.com/KhronosGroup/MoltenVK) by KhronosGroup
 - [Sparkle](https://github.com/sparkle-project/Sparkle) by sparkle-project
 - [SemanticVersion](https://github.com/SwiftPackageIndex/SemanticVersion) by SwiftPackageIndex
-- [CrossOver 22.1.1](https://www.codeweavers.com/crossover) by CodeWeavers e WineHQ
-- [ProtonDB](https://www.protondb.com/) per i dati di compatibilità
+- [CrossOver 22.1.1](https://www.codeweavers.com/crossover) by CodeWeavers and WineHQ
+- [ProtonDB](https://www.protondb.com/) for compatibility data
 - D3DMetal by Apple
 
-Special thanks a Gcenx, ohaiibuzzle e Nat Brown per il supporto al progetto originale Jack!
+Special thanks to Gcenx, ohaiibuzzle and Nat Brown for their support of the original Whisky project!
 
 ---
 
@@ -82,7 +82,7 @@ Special thanks a Gcenx, ohaiibuzzle e Nat Brown per il supporto al progetto orig
         </picture>
     </td>
     <td>
-        Jack (e Jack) non esisterebbero senza CrossOver. Supporta il lavoro di CodeWeavers con il loro <a href="https://www.codeweavers.com/store?ad=1010">link affiliato</a>.
+        Jack (and Whisky) would not exist without CrossOver. Support CodeWeavers' work via their <a href="https://www.codeweavers.com/store?ad=1010">affiliate link</a>.
     </td>
   </tr>
 </table>

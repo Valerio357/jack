@@ -16,9 +16,9 @@ public enum SteamQRAuthError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .sessionFailed(let msg): return "QR login fallito: \(msg)"
-        case .timeout: return "QR scaduto. Riprova."
-        case .cancelled: return "Login annullato."
+        case .sessionFailed(let msg): return "QR login failed: \(msg)"
+        case .timeout: return "QR code expired. Please try again."
+        case .cancelled: return "Login cancelled."
         }
     }
 }
@@ -52,7 +52,7 @@ public final class SteamQRAuthService: ObservableObject {
         let (data, _) = try await URLSession.shared.data(for: req)
         let json = try JSONDecoder().decode(SteamQRBeginResponse.self, from: data)
         guard let inner = json.response, !inner.challenge_url.isEmpty else {
-            throw SteamQRAuthError.sessionFailed("Nessuna challenge_url dalla risposta Steam.")
+            throw SteamQRAuthError.sessionFailed("No challenge_url in Steam response.")
         }
         challengeURL = inner.challenge_url
         return inner.challenge_url

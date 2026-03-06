@@ -27,9 +27,9 @@ public struct SteamAPIClient: Sendable {
         public var errorDescription: String? {
             switch self {
             case .noGamesFound:
-                return "Nessun gioco trovato. Assicurati che la tua libreria Steam sia pubblica (Profilo → Modifica profilo → Impostazioni privacy → Dettagli gioco: Pubblico)."
+                return "No games found. Make sure your Steam library is set to public (Profile → Edit Profile → Privacy Settings → Game details: Public)."
             case .profilePrivate:
-                return "Profilo Steam privato. Rendi pubblica la tua libreria nelle impostazioni privacy di Steam."
+                return "Private Steam profile. Make your library public in Steam privacy settings."
             }
         }
     }

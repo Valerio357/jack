@@ -49,7 +49,7 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "gearshape")
                 }
-                .help("Impostazioni")
+                .help("Settings")
             }
         }
         .sheet(isPresented: $showBottleCreation) {
@@ -94,17 +94,17 @@ struct ContentView: View {
                 .frame(width: 100, height: 100)
                 .opacity(0.5)
 
-            Text("Configurazione Iniziale")
+            Text("Initial Setup")
                 .font(.jackTitle)
 
-            Text("Jack ha bisogno di una 'Bottle' per eseguire Steam.")
+            Text("Jack needs a Bottle to run Steam.")
                 .font(.jackBody)
                 .foregroundStyle(.white.opacity(0.6))
 
             Button {
                 showBottleCreation.toggle()
             } label: {
-                Text("Crea Bottiglia Jack")
+                Text("Create Jack Bottle")
                     .fontWeight(.semibold)
                     .padding(.horizontal, 24)
                     .padding(.vertical, 12)

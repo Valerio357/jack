@@ -103,11 +103,11 @@ private struct WelcomeStep: View {
                 }
 
             VStack(spacing: 10) {
-                Text("Benvenuto su Jack")
+                Text("Welcome to Jack")
                     .font(.system(size: 28, weight: .bold))
                     .foregroundStyle(.white)
 
-                Text("Jack porta i tuoi giochi Steam su Mac\ncon compatibilità Wine ottimizzata.")
+                Text("Jack brings your Steam library to Mac\nwith optimised Wine compatibility.")
                     .font(.jackBody)
                     .foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center)
@@ -115,7 +115,7 @@ private struct WelcomeStep: View {
 
             Spacer()
 
-            OnboardingButton(label: "Inizia", isPrimary: true, action: onNext)
+            OnboardingButton(label: "Get Started", isPrimary: true, action: onNext)
         }
         .padding(40)
     }
@@ -144,17 +144,17 @@ private struct SteamLoginStep: View {
                 .foregroundStyle(Color.jackAccent)
 
             VStack(spacing: 8) {
-                Text("Accedi a Steam")
+                Text("Sign in to Steam")
                     .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(.white)
-                Text("Inserisci le tue credenziali Steam.\nJack le usa per scaricare i tuoi giochi.")
+                Text("Enter your Steam credentials.\nJack uses them to download your games.")
                     .font(.jackBody)
                     .foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center)
             }
 
             VStack(spacing: 12) {
-                TextField("Username Steam", text: $username)
+                TextField("Steam Username", text: $username)
                     .textFieldStyle(.plain)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -174,7 +174,7 @@ private struct SteamLoginStep: View {
                     .tint(Color.jackAccent)
                     .textContentType(.password)
 
-                TextField("Codice Steam Guard (5 caratteri)", text: $guardCode)
+                TextField("Steam Guard Code (5 characters)", text: $guardCode)
                     .textFieldStyle(.plain)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -185,7 +185,7 @@ private struct SteamLoginStep: View {
                     .textContentType(.oneTimeCode)
             }
 
-            Text("Apri Steam Mobile → Steam Guard → copia il codice a 5 caratteri.")
+            Text("Open Steam Mobile → Steam Guard → copy the 5-character code.")
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.4))
                 .multilineTextAlignment(.center)
@@ -193,7 +193,7 @@ private struct SteamLoginStep: View {
             if isTesting {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small).tint(Color.jackAccent)
-                    Text("Login in corso...")
+                    Text("Signing in…")
                         .font(.jackCaption)
                         .foregroundStyle(.white.opacity(0.6))
                 }
@@ -207,7 +207,7 @@ private struct SteamLoginStep: View {
             }
 
             if loginSuccess {
-                Label("Login riuscito!", systemImage: "checkmark.circle.fill")
+                Label("Login successful!", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(Color.jackSuccess)
                     .font(.jackCaption)
             }
@@ -215,14 +215,14 @@ private struct SteamLoginStep: View {
             Spacer()
 
             HStack(spacing: 12) {
-                OnboardingButton(label: "Salta", isPrimary: false) {
+                OnboardingButton(label: "Skip", isPrimary: false) {
                     if !username.isEmpty {
                         steamUsername = username
                     }
                     onNext()
                 }
 
-                OnboardingButton(label: "Accedi", isPrimary: true) {
+                OnboardingButton(label: "Sign In", isPrimary: true) {
                     doLogin()
                 }
                 .disabled(username.isEmpty || password.isEmpty || guardCode.isEmpty || isTesting)
@@ -290,10 +290,10 @@ private struct ReadyStep: View {
             }
 
             VStack(spacing: 8) {
-                Text("Sei pronto!")
+                Text("You're all set!")
                     .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(.white)
-                Text("La tua libreria Steam sta per apparire.\nBuona sessione!")
+                Text("Your Steam library is ready to go.\nHappy gaming!")
                     .font(.jackBody)
                     .foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center)
@@ -301,7 +301,7 @@ private struct ReadyStep: View {
 
             Spacer()
 
-            OnboardingButton(label: "Apri la libreria", isPrimary: true, action: onFinish)
+            OnboardingButton(label: "Open Library", isPrimary: true, action: onFinish)
         }
         .padding(40)
     }

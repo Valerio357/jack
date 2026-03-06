@@ -17,10 +17,10 @@ public enum GoldbergError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .releaseNotFound:  return "Nessuna release Goldberg trovata su GitHub."
-        case .downloadFailed:   return "Download Goldberg fallito."
-        case .extractionFailed: return "Estrazione Goldberg fallita."
-        case .dllNotFound:      return "steam_api.dll non trovata nella release."
+        case .releaseNotFound:  return "No Goldberg release found on GitHub."
+        case .downloadFailed:   return "Goldberg download failed."
+        case .extractionFailed: return "Goldberg extraction failed."
+        case .dllNotFound:      return "steam_api.dll not found in the release."
         }
     }
 }

@@ -24,10 +24,10 @@ public enum SteamlessError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .notSteamStub:        return "Nessun SteamStub DRM rilevato."
-        case .unsupportedVariant:  return "Variante SteamStub non supportata."
-        case .corruptHeader:       return "Header SteamStub corrotto."
-        case .unpackFailed(let d): return "SteamStub strip fallito: \(d)"
+        case .notSteamStub:        return "No SteamStub DRM detected."
+        case .unsupportedVariant:  return "Unsupported SteamStub variant."
+        case .corruptHeader:       return "Corrupt SteamStub header."
+        case .unpackFailed(let d): return "SteamStub strip failed: \(d)"
         }
     }
 }

@@ -15,7 +15,10 @@
       "WebFetch(domain:codeberg.org)",
       "WebFetch(domain:deepwiki.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(sips:*)",
+      "Bash(__NEW_LINE_00c4d5851a98babd__:*)"
     ]
   }
 }

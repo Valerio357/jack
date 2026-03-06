@@ -30,15 +30,15 @@ public enum SteamCMDError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .downloadFailed:
-            return "Impossibile scaricare SteamCMD."
+            return "Failed to download SteamCMD."
         case .extractionFailed:
-            return "Impossibile estrarre SteamCMD."
+            return "Failed to extract SteamCMD."
         case .loginFailed(let msg):
-            return "Login SteamCMD fallito: \(msg)"
+            return "SteamCMD login failed: \(msg)"
         case .installFailed(let msg):
-            return "Installazione gioco fallita: \(msg)"
+            return "Game installation failed: \(msg)"
         case .notInstalled:
-            return "SteamCMD non è installato."
+            return "SteamCMD is not installed."
         case .steamGuardRequired(let msg):
             return msg
         }
@@ -142,13 +142,13 @@ public final class SteamCMDService: @unchecked Sendable {
 
         // Cached credentials missing — only happens when no password supplied
         if output.contains("Cached credentials not found") {
-            throw SteamCMDError.loginFailed("Credenziali non salvate. Inserisci la password.")
+            throw SteamCMDError.loginFailed("No saved credentials. Please enter your password.")
         }
 
         // Rate limit
         if output.contains("Rate Limit") {
             throw SteamCMDError.loginFailed(
-                "Troppi tentativi di login. Attendi qualche minuto e riprova."
+                "Too many login attempts. Please wait a few minutes and try again."
             )
         }
 
@@ -161,7 +161,7 @@ public final class SteamCMDService: @unchecked Sendable {
            output.contains("Two-factor") || output.contains("Steam Guard")
             || output.contains("two-factor") || output.contains("SteamGuard") {
             throw SteamCMDError.steamGuardRequired(
-                "Inserisci il codice Steam Guard (5 caratteri dall'app Steam Mobile)."
+                "Enter your Steam Guard code (5 characters from the Steam Mobile app)."
             )
         }
 
@@ -199,7 +199,7 @@ public final class SteamCMDService: @unchecked Sendable {
         let (_, output) = try await runSteamCMD(steamArgs: steamArgs)
 
         if output.contains("Cached credentials not found") {
-            throw SteamCMDError.loginFailed("Credenziali non salvate. Effettua il login prima.")
+            throw SteamCMDError.loginFailed("No saved credentials. Please log in first.")
         }
 
         return Self.parseAppIDs(from: output)
@@ -279,7 +279,7 @@ public final class SteamCMDService: @unchecked Sendable {
 
         if fullOutput.contains("Cached credentials not found") || fullOutput.contains("password:") {
             throw SteamCMDError.loginFailed(
-                "Credenziali non salvate. Vai in Impostazioni ed effettua il login SteamCMD."
+                "No saved credentials. Go to Settings and log in with SteamCMD."
             )
         }
 
@@ -408,6 +408,6 @@ public final class SteamCMDService: @unchecked Sendable {
         if let last = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
             return last.trimmingCharacters(in: .whitespaces)
         }
-        return "Nessun output da SteamCMD"
+        return "No output from SteamCMD"
     }
 }

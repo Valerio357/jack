@@ -2,6 +2,19 @@
 //  SteamLibraryView.swift
 //  Jack
 //
+//  This file is part of Jack.
+//
+//  Jack is free software: you can redistribute it and/or modify it under the terms
+//  of the GNU General Public License as published by the Free Software Foundation,
+//  either version 3 of the License, or (at your option) any later version.
+//
+//  Jack is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+//  without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+//  See the GNU General Public License for more details.
+//
+//  You should have received a copy of the GNU General Public License along with Jack.
+//  If not, see https://www.gnu.org/licenses/.
+//
 
 import SwiftUI
 import JackKit
@@ -10,9 +23,9 @@ import UniformTypeIdentifiers
 // MARK: - Filter
 
 enum GameFilter: String, CaseIterable {
-    case all = "Tutti"
-    case compatible = "Compatibili"
-    case installed = "Installati"
+    case all = "All"
+    case compatible = "Compatible"
+    case installed = "Installed"
 }
 
 // MARK: - Game State
@@ -61,7 +74,7 @@ final class SteamLibraryViewModel: ObservableObject {
 
     func loadGames(steamID64: String, username: String) async {
         guard !username.isEmpty else {
-            errorMessage = "Configura le credenziali Steam nelle Impostazioni."
+            errorMessage = "Configure your Steam credentials in Settings."
             return
         }
 
@@ -72,7 +85,7 @@ final class SteamLibraryViewModel: ObservableObject {
             self.games = try await SteamAPIClient.getOwnedGames(steamID64: steamID64, username: username)
             self.isLoading = false
             if self.games.isEmpty {
-                errorMessage = "Nessun gioco trovato. Assicurati che la tua libreria Steam sia pubblica."
+                errorMessage = "No games found. Make sure your Steam library is set to public."
             } else {
                 await checkAllGamesInstalled()
                 await loadSummaries()
@@ -179,7 +192,7 @@ struct SteamLibraryView: View {
                 HStack(spacing: 12) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.white.opacity(0.4))
-                    TextField("Cerca o Steam ID…", text: $viewModel.searchText)
+                    TextField("Search or Steam ID…", text: $viewModel.searchText)
                         .textFieldStyle(.plain)
                         .foregroundStyle(.white)
                         .tint(Color.jackAccent)
@@ -209,12 +222,12 @@ struct SteamLibraryView: View {
                     if viewModel.isLoading && viewModel.games.isEmpty {
                         VStack(spacing: 12) {
                             ProgressView().tint(Color.jackAccent)
-                            Text("Ricezione dati da Steam...").font(.jackCaption).foregroundStyle(.secondary)
+                            Text("Loading library from Steam…").font(.jackCaption).foregroundStyle(.secondary)
                         }
                     } else if let err = viewModel.errorMessage {
                         VStack(spacing: 12) {
                             Text(err).font(.jackCaption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                            Button("Riprova") {
+                            Button("Retry") {
                                 Task { await viewModel.loadGames(steamID64: steamUserID, username: steamUsername) }
                             }.buttonStyle(.bordered)
                         }.padding()
@@ -275,7 +288,7 @@ struct SteamLibraryView: View {
                     .scaledToFit()
                     .frame(width: 80, height: 80)
                     .opacity(0.15)
-                Text("Seleziona un gioco per iniziare")
+                Text("Select a game to get started")
                     .foregroundStyle(.white.opacity(0.2))
                     .font(.jackHeadline)
             }
@@ -421,7 +434,7 @@ struct GameDetailPanel: View {
                             VStack(alignment: .leading, spacing: 14) {
                                 HStack(alignment: .top) {
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text("Compatibilità ProtonDB")
+                                        Text("ProtonDB Compatibility")
                                             .font(.system(size: 10, weight: .bold))
                                             .foregroundStyle(.white.opacity(0.4))
                                             .textCase(.uppercase)
@@ -437,9 +450,9 @@ struct GameDetailPanel: View {
                                 }
                                 Divider().background(Color.white.opacity(0.08))
                                 HStack(spacing: 0) {
-                                    MetadataLabel(title: "Dimensione", value: formattedSize)
+                                    MetadataLabel(title: "Size", value: formattedSize)
                                     MetadataLabel(title: "Playtime", value: "\(game.playtimeHours)h")
-                                    MetadataLabel(title: "Anti-cheat", value: "Nessuno")
+                                    MetadataLabel(title: "Anti-cheat", value: "None")
                                 }
                             }
                         }
@@ -447,7 +460,7 @@ struct GameDetailPanel: View {
                         // ── Opzioni di lancio ────────────────────────────
                         DetailCard {
                             VStack(alignment: .leading, spacing: 12) {
-                                Text("OPZIONI DI LANCIO")
+                                Text("LAUNCH OPTIONS")
                                     .font(.system(size: 10, weight: .bold))
                                     .foregroundStyle(.white.opacity(0.35))
 
@@ -459,9 +472,9 @@ struct GameDetailPanel: View {
                                     HStack(spacing: 6) {
                                         Image(systemName: "macwindow")
                                             .foregroundStyle(.white.opacity(0.6))
-                                        Text("Modalità finestra")
+                                        Text("Windowed mode")
                                             .font(.system(size: 12, weight: .medium))
-                                        Text("· fix schermo nero")
+                                        Text("· fixes black screen")
                                             .font(.system(size: 11))
                                             .foregroundStyle(.white.opacity(0.3))
                                     }
@@ -478,7 +491,7 @@ struct GameDetailPanel: View {
                                         VStack(alignment: .leading, spacing: 1) {
                                             Text("Goldberg DRM Bypass")
                                                 .font(.system(size: 12, weight: .medium))
-                                            Text("Per giochi con DRM Steam (es. Dark Souls). Emula steam_api localmente.")
+                                            Text("For games with Steam DRM (e.g. Dark Souls). Emulates steam_api locally.")
                                                 .font(.system(size: 10))
                                                 .foregroundStyle(.white.opacity(0.3))
                                         }
@@ -507,7 +520,7 @@ struct GameDetailPanel: View {
                             if showCancelButton { cancelBtn }
 
                             if steamUsername.isEmpty && installState == .notInstalled {
-                                Text("Configura lo username Steam nelle Impostazioni.")
+                                Text("Configure your Steam username in Settings.")
                                     .font(.jackCaption)
                                     .foregroundStyle(.white.opacity(0.4))
                                     .multilineTextAlignment(.center)
@@ -532,14 +545,14 @@ struct GameDetailPanel: View {
             goldbergEnabled = UserDefaults.standard.bool(forKey: "goldberg_\(game.appid)")
         }
         .confirmationDialog(
-            "Disinstallare \(game.name)?",
+            "Uninstall \(game.name)?",
             isPresented: $showUninstallConfirm,
             titleVisibility: .visible
         ) {
-            Button("Disinstalla", role: .destructive) { uninstallGame() }
-            Button("Annulla", role: .cancel) {}
+            Button("Uninstall", role: .destructive) { uninstallGame() }
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("I file di gioco verranno eliminati. Non potrai giocare senza reinstallare.")
+            Text("Game files will be deleted. You won't be able to play without reinstalling.")
         }
     }
 
@@ -561,8 +574,8 @@ struct GameDetailPanel: View {
             .labelsHidden()
 
             Text(bottle.settings.dxvk
-                 ? "Vulkan/Metal via DXVK. Consigliato per DirectX 9/10/11."
-                 : "WineD3D software renderer. Più compatibile, meno performante.")
+                 ? "Vulkan/Metal via DXVK. Recommended for DirectX 9/10/11."
+                 : "WineD3D software renderer. More compatible, lower performance.")
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.35))
         }
@@ -574,7 +587,7 @@ struct GameDetailPanel: View {
         Button(role: .destructive) {
             showUninstallConfirm = true
         } label: {
-            Label("Disinstalla gioco", systemImage: "trash")
+            Label("Uninstall game", systemImage: "trash")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.red.opacity(0.7))
                 .frame(maxWidth: .infinity)
@@ -619,18 +632,18 @@ struct GameDetailPanel: View {
         return DetailCard {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("SALVATAGGI")
+                    Text("SAVES")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white.opacity(0.35))
                     Spacer()
                     // Steam Mac indicator
                     if steamInstalled {
-                        Label(cloudCount > 0 ? "\(cloudCount) file su Steam Mac" : "Steam Mac",
+                        Label(cloudCount > 0 ? "\(cloudCount) files on Steam Mac" : "Steam Mac",
                               systemImage: "checkmark.icloud")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(cloudCount > 0 ? Color.jackSuccess : .white.opacity(0.3))
                     } else {
-                        Label("Steam Mac non trovato", systemImage: "xmark.icloud")
+                        Label("Steam Mac not found", systemImage: "xmark.icloud")
                             .font(.system(size: 10))
                             .foregroundStyle(.white.opacity(0.25))
                     }
@@ -642,14 +655,14 @@ struct GameDetailPanel: View {
                     Image(systemName: "folder")
                         .foregroundStyle(.white.opacity(0.4))
                         .font(.system(size: 12))
-                    Text(saveDir?.lastPathComponent ?? "Nessun save locale")
+                    Text(saveDir?.lastPathComponent ?? "No local saves")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.white.opacity(saveDir != nil ? 0.5 : 0.25))
                         .lineLimit(1)
                     Spacer()
                     if let dir = saveDir {
                         Button { NSWorkspace.shared.open(dir) } label: {
-                            Text("Apri").font(.system(size: 11, weight: .medium))
+                            Text("Open").font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(Color.jackAccent)
                         }.buttonStyle(.plain)
                     }
@@ -663,7 +676,7 @@ struct GameDetailPanel: View {
                         Button {
                             manualSyncFromCloud()
                         } label: {
-                            Label("↓ Da Steam", systemImage: "icloud.and.arrow.down")
+                            Label("↓ From Steam", systemImage: "icloud.and.arrow.down")
                                 .font(.system(size: 11, weight: .medium))
                                 .frame(maxWidth: .infinity, minHeight: 28)
                                 .background(Color.jackAccent.opacity(0.15))
@@ -674,7 +687,7 @@ struct GameDetailPanel: View {
                     }
 
                     Button { backupSaves() } label: {
-                        Label("Backup", systemImage: "externaldrive.badge.plus")
+                        Label("Back Up", systemImage: "externaldrive.badge.plus")
                             .font(.system(size: 11, weight: .medium))
                             .frame(maxWidth: .infinity, minHeight: 28)
                             .background(Color.white.opacity(0.07))
@@ -685,7 +698,7 @@ struct GameDetailPanel: View {
                     .disabled(saveDir == nil)
 
                     Button { restoreSaves() } label: {
-                        Label("Ripristina", systemImage: "externaldrive.badge.minus")
+                        Label("Restore", systemImage: "externaldrive.badge.minus")
                             .font(.system(size: 11, weight: .medium))
                             .frame(maxWidth: .infinity, minHeight: 28)
                             .background(Color.white.opacity(0.07))
@@ -705,7 +718,7 @@ struct GameDetailPanel: View {
                 }
 
                 if !steamInstalled && !goldbergEnabled {
-                    Text("Abilita Goldberg per usare save locali indipendenti da Steam.")
+                    Text("Enable Goldberg to use local saves independent from Steam.")
                         .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.3))
                 }
@@ -717,7 +730,7 @@ struct GameDetailPanel: View {
         guard let exeURL = SteamCMDService.findGameExecutable(
             in: SteamCMDService.gameInstallDir(appID: game.appid)
         ) else {
-            cloudSyncStatus = "⚠ Gioco non installato"
+            cloudSyncStatus = "⚠ Game not installed"
             return
         }
         let exeDir = exeURL.deletingLastPathComponent()
@@ -729,8 +742,8 @@ struct GameDetailPanel: View {
                     appID: syncAppID, steamID: syncID, exeDir: exeDir
                 )
                 cloudSyncStatus = result.fileCount > 0
-                    ? "✓ Importati \(result.fileCount) file da Steam Mac"
-                    : "Nessun file trovato in Steam Mac"
+                    ? "✓ Imported \(result.fileCount) files from Steam Mac"
+                    : "No files found in Steam Mac"
             } catch {
                 cloudSyncStatus = "⚠ \(error.localizedDescription)"
             }
@@ -790,9 +803,9 @@ struct GameDetailPanel: View {
                 try fm.copyItem(at: src, to: dest)
                 let fmt = DateFormatter()
                 fmt.dateStyle = .short; fmt.timeStyle = .short
-                backupStatus = "Backup: \(fmt.string(from: Date()))"
+                backupStatus = "Backed up: \(fmt.string(from: Date()))"
             } catch {
-                backupStatus = "Errore backup: \(error.localizedDescription)"
+                backupStatus = "Backup error: \(error.localizedDescription)"
             }
         }
     }
@@ -807,9 +820,9 @@ struct GameDetailPanel: View {
                     try fm.removeItem(at: dest)
                 }
                 try fm.copyItem(at: src, to: dest)
-                backupStatus = "Ripristino completato ✓"
+                backupStatus = "Restore completed ✓"
             } catch {
-                backupStatus = "Errore ripristino: \(error.localizedDescription)"
+                backupStatus = "Restore error: \(error.localizedDescription)"
             }
         }
     }
@@ -828,7 +841,7 @@ struct GameDetailPanel: View {
             installState = .notInstalled
             installLog = ""
         } label: {
-            Text("Annulla download")
+            Text("Cancel download")
                 .font(.jackCaption)
                 .foregroundStyle(.red.opacity(0.8))
         }
@@ -838,7 +851,7 @@ struct GameDetailPanel: View {
     private func downloadProgress(progress: Double) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Download via SteamCMD")
+                Text("Downloading via SteamCMD")
                     .font(.jackCaption)
                     .foregroundStyle(.white.opacity(0.6))
                 Spacer()
@@ -896,15 +909,15 @@ struct GameDetailPanel: View {
                 switch installState {
                 case .preparing:
                     ProgressView().tint(.white).controlSize(.small)
-                    Text("Preparazione SteamCMD...")
+                    Text("Preparing SteamCMD…")
                 case .downloading:
-                    Text("Download in corso...")
+                    Text("Downloading…")
                 case .installed:
                     Image(systemName: "play.fill")
-                    Text("Gioca")
+                    Text("Play")
                 case .notInstalled:
                     Image(systemName: "arrow.down.circle.fill")
-                    Text(steamUsername.isEmpty ? "Configura Steam prima" : "Installa Gioco")
+                    Text(steamUsername.isEmpty ? "Configure Steam first" : "Install Game")
                 }
             }
             .fontWeight(.bold)
@@ -983,7 +996,7 @@ struct GameDetailPanel: View {
             } catch {
                 print("SteamCMD install failed: \(error)")
                 installState = .notInstalled
-                installLog += "\nErrore: \(error.localizedDescription)"
+                installLog += "\nError: \(error.localizedDescription)"
             }
         }
     }
@@ -996,7 +1009,7 @@ struct GameDetailPanel: View {
             let installDir = SteamCMDService.gameInstallDir(appID: appID)
 
             guard let exeURL = SteamCMDService.findGameExecutable(in: installDir) else {
-                launchError = "Eseguibile non trovato. Prova a reinstallare il gioco."
+                launchError = "Executable not found. Try reinstalling the game."
                 installState = .notInstalled
                 return
             }
@@ -1043,7 +1056,7 @@ struct GameDetailPanel: View {
                 do {
                     _ = try await Wine.runWine(["wineboot", "-u"], bottle: bottle)
                 } catch {
-                    launchError = "Inizializzazione Wine fallita: \(error.localizedDescription)"
+                    launchError = "Wine initialisation failed: \(error.localizedDescription)"
                     return
                 }
             }
@@ -1087,7 +1100,7 @@ struct GameDetailPanel: View {
                 do {
                     try Wine.enableDXVK(bottle: bottle)
                 } catch {
-                    launchError = "DXVK non disponibile: \(error.localizedDescription). Prova WineD3D."
+                    launchError = "DXVK not available: \(error.localizedDescription). Try WineD3D."
                     return
                 }
             }
@@ -1118,10 +1131,10 @@ struct GameDetailPanel: View {
                         appID: syncAppID, steamID: syncID, exeDir: exeDir
                     )
                     if result.fileCount > 0 {
-                        cloudSyncStatus = "↓ Sync da Steam Mac: \(result.fileCount) file importati"
+                        cloudSyncStatus = "↓ Synced from Steam Mac: \(result.fileCount) files imported"
                     }
                 } catch {
-                    cloudSyncStatus = "⚠ Sync fallito: \(error.localizedDescription)"
+                    cloudSyncStatus = "⚠ Sync failed: \(error.localizedDescription)"
                 }
             }
 
@@ -1167,7 +1180,7 @@ struct GameDetailPanel: View {
                     environment: steamEnv
                 ) { }
             } catch {
-                launchError = "Errore avvio: \(error.localizedDescription)"
+                launchError = "Launch error: \(error.localizedDescription)"
                 return
             }
 
@@ -1182,7 +1195,7 @@ struct GameDetailPanel: View {
                     )
                     if let count = result?.fileCount, count > 0 {
                         await MainActor.run {
-                            self.cloudSyncStatus = "↑ Sync verso Steam Mac: \(count) file salvati"
+                            self.cloudSyncStatus = "↑ Synced to Steam Mac: \(count) files saved"
                         }
                     }
                 }

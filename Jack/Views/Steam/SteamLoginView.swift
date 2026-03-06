@@ -52,7 +52,7 @@ struct SteamLoginView: View {
                         .font(.system(size: 36, weight: .bold, design: .default))
                         .foregroundStyle(.white)
 
-                    Text("Porta i tuoi giochi Steam su Mac")
+                    Text("Your Steam library on Mac")
                         .font(.jackBody)
                         .foregroundStyle(.white.opacity(0.6))
                         .multilineTextAlignment(.center)
@@ -70,7 +70,7 @@ struct SteamLoginView: View {
                         } else {
                             Image(systemName: "person.fill")
                         }
-                        Text(isLoggingIn ? "Signing in…" : "Accedi con Steam")
+                        Text(isLoggingIn ? "Signing in…" : "Sign in with Steam")
                             .fontWeight(.semibold)
                     }
                     .frame(minWidth: 200, minHeight: 44)
