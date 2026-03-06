@@ -18,6 +18,7 @@
 
 import SwiftUI
 import JackKit
+import CoreImage.CIFilterBuiltins
 
 struct OnboardingView: View {
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
@@ -139,6 +140,7 @@ private struct ConnectSteamStep: View {
     @State private var isLoggingIn = false
     @State private var manualID = ""
     @State private var errorMessage: String?
+    @State private var showQR = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -157,25 +159,48 @@ private struct ConnectSteamStep: View {
                     .foregroundStyle(.white.opacity(0.6))
             }
 
-            Button {
-                loginWithSteam()
-            } label: {
-                HStack(spacing: 8) {
-                    if isLoggingIn {
-                        ProgressView().controlSize(.small).tint(.white)
-                    } else {
-                        Image(systemName: "person.badge.key.fill")
+            HStack(spacing: 10) {
+                Button {
+                    loginWithSteam()
+                } label: {
+                    HStack(spacing: 6) {
+                        if isLoggingIn {
+                            ProgressView().controlSize(.small).tint(.white)
+                        } else {
+                            Image(systemName: "person.badge.key.fill")
+                        }
+                        Text(isLoggingIn ? "Apertura…" : "Browser")
+                            .fontWeight(.semibold)
                     }
-                    Text(isLoggingIn ? "Apertura Steam…" : "Accedi con Steam")
-                        .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(Color.jackAccent)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .background(Color.jackAccent)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .buttonStyle(.plain)
+                .disabled(isLoggingIn)
+
+                Button {
+                    showQR = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "qrcode.viewfinder")
+                        Text("QR Code")
+                            .fontWeight(.semibold)
+                    }
+                    .frame(minWidth: 110, minHeight: 44)
+                    .background(Color.white.opacity(0.12))
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
-            .disabled(isLoggingIn)
+            .sheet(isPresented: $showQR) {
+                QRLoginSheet { id in
+                    steamUserID = id
+                    onNext()
+                }
+            }
 
             HStack {
                 Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
@@ -240,6 +265,88 @@ private struct ConnectSteamStep: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+// MARK: - QR Code Login View
+
+struct QRLoginSheet: View {
+    let onSuccess: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var qrImage: NSImage?
+    @State private var statusText = "Generazione QR…"
+    @State private var loginTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("Accedi con Steam Mobile")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white)
+
+            if let img = qrImage {
+                Image(nsImage: img)
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: 200, height: 200)
+                    .cornerRadius(12)
+                    .padding(8)
+                    .background(Color.white)
+                    .cornerRadius(16)
+            } else {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.white.opacity(0.1))
+                    .frame(width: 216, height: 216)
+                    .overlay(ProgressView().tint(Color.jackAccent))
+            }
+
+            Text(statusText)
+                .font(.jackCaption)
+                .foregroundStyle(.white.opacity(0.6))
+                .multilineTextAlignment(.center)
+
+            Text("1. Apri Steam sul tuo telefono\n2. Tocca l'icona QR nella schermata di login\n3. Scansiona questo codice")
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.4))
+                .multilineTextAlignment(.center)
+
+            Button("Annulla") { loginTask?.cancel(); dismiss() }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white.opacity(0.5))
+                .font(.jackCaption)
+        }
+        .padding(32)
+        .frame(width: 320)
+        .background(Color.jackBackground)
+        .task {
+            loginTask = Task {
+                do {
+                    let steamID = try await SteamQRAuthService.shared.login { url in
+                        Task { @MainActor in
+                            statusText = "In attesa di conferma…"
+                            qrImage = Self.makeQR(url)
+                        }
+                    }
+                    onSuccess(steamID)
+                    dismiss()
+                } catch {
+                    statusText = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private static func makeQR(_ string: String) -> NSImage? {
+        guard let data = string.data(using: .utf8) else { return nil }
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = data
+        filter.correctionLevel = "M"
+        guard let ci = filter.outputImage else { return nil }
+        let scale = 200.0 / ci.extent.width
+        let scaled = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let rep = NSCIImageRep(ciImage: scaled)
+        let img = NSImage(size: rep.size)
+        img.addRepresentation(rep)
+        return img
     }
 }
 

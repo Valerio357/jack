@@ -55,70 +55,53 @@ public struct SteamAPIClient: Sendable {
         return decoded.response.games ?? []
     }
 
-    /// Best effort to get game size in GB from Steam Store API
+    /// Fetch game size from Steam Store API. Returns GB.
     public static func getGameSizeGB(appID: Int) async -> Double? {
-        // Use the storefront API with English to have consistent parsing
-        let urlString = "https://store.steampowered.com/api/appdetails?appids=\(appID)&filters=requirements&l=english"
+        let urlString = "https://store.steampowered.com/api/appdetails?appids=\(appID)&filters=pc_requirements,mac_requirements&l=english"
         guard let url = URL(string: urlString) else { return nil }
-        
         do {
             let (data, _) = try await session.data(from: url)
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            
-            guard let appData = json?["\(appID)"] as? [String: Any],
-                  let success = appData["success"] as? Bool, success,
-                  let dataDict = appData["data"] as? [String: Any] else {
-                return nil
-            }
-            
-            // Try to find it in pc_requirements
-            if let pcReq = dataDict["pc_requirements"] as? [String: Any],
-               let minimum = pcReq["minimum"] as? String {
-                if let size = parseSizeFromRequirements(minimum) {
-                    return size
-                }
-            }
-            
-            // Try mac_requirements as fallback
-            if let macReq = dataDict["mac_requirements"] as? [String: Any],
-               let minimum = macReq["minimum"] as? String {
-                if let size = parseSizeFromRequirements(minimum) {
-                    return size
-                }
-            }
-            
-        } catch {
-            print("DEBUG: Failed to fetch game size for \(appID): \(error)")
-        }
-        return nil
-    }
-    
-    private static func parseSizeFromRequirements(_ html: String) -> Double? {
-        // Clean HTML tags
-        let cleanText = html.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-        
-        // Look for "XX GB" but specifically after "Storage" or "Space"
-        // Patterns: "70 GB available space", "Storage: 70 GB", etc.
-        let patterns = [
-            #"(\d+)\s*GB\s*available"#,
-            #"Storage:\s*(\d+)\s*GB"#,
-            #"Space:\s*(\d+)\s*GB"#,
-            #"(\d+)\s*GB"#
-        ]
-        
-        let nsString = cleanText as NSString
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-                if let match = regex.firstMatch(in: cleanText, options: [], range: NSRange(location: 0, length: nsString.length)) {
-                    if let size = Double(nsString.substring(with: match.range(at: 1))) {
-                        // Sanity check: disk space is usually > 1GB for modern games, 
-                        // but let's just return the first match that looks like a disk requirement
-                        if size > 1 {
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let appData = json["\(appID)"] as? [String: Any],
+                  (appData["success"] as? Bool) == true,
+                  let dataDict = appData["data"] as? [String: Any] else { return nil }
+
+            for key in ["pc_requirements", "mac_requirements"] {
+                if let req = dataDict[key] as? [String: Any] {
+                    for field in ["minimum", "recommended"] {
+                        if let html = req[field] as? String,
+                           let size = parseSizeGB(from: html) {
                             return size
                         }
                     }
                 }
             }
+        } catch { }
+        return nil
+    }
+
+    private static func parseSizeGB(from html: String) -> Double? {
+        let text = html.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        let ns = text as NSString
+
+        // (pattern, isGB) — capture group 1 = the number
+        let patterns: [(String, Bool)] = [
+            (#"(?:Storage|Spazio|Space|HDD|SSD)\s*:\s*(\d+[,.]?\d*)\s*GB"#, true),
+            (#"(\d+[,.]?\d*)\s*GB\s+(?:available|liberi|free|di spazio)"#, true),
+            (#"(\d+[,.]?\d*)\s*GB"#, true),
+            (#"(?:Storage|Space)\s*:\s*(\d+)\s*MB"#, false),
+            (#"(\d+)\s*MB\s+(?:available|liberi|free)"#, false),
+        ]
+
+        for (pattern, isGB) in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+                  let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)),
+                  match.numberOfRanges > 1 else { continue }
+            let captureRange = match.range(at: 1)
+            guard captureRange.location != NSNotFound else { continue }
+            let numStr = ns.substring(with: captureRange).replacingOccurrences(of: ",", with: ".")
+            guard let num = Double(numStr), num > 0 else { continue }
+            return isGB ? num : num / 1024.0
         }
         return nil
     }

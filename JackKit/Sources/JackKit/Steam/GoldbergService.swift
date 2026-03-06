@@ -91,23 +91,29 @@ public final class GoldbergService: @unchecked Sendable {
 
         guard unzip.terminationStatus == 0 else { throw GoldbergError.extractionFailed }
 
-        // Find and copy steam_api*.dll from the extract tree
-        guard let enumerator = fm.enumerator(at: extractDir, includingPropertiesForKeys: nil) else {
-            throw GoldbergError.extractionFailed
-        }
+        // Find and copy steam_api*.dll — done synchronously to avoid Sendable issues
+        let found = Self.copyDLLs(from: extractDir, to: goldbergDir)
+        try? fm.removeItem(at: extractDir)
+        guard found else { throw GoldbergError.dllNotFound }
+    }
 
+    // MARK: - Private helpers
+
+    private static func copyDLLs(from extractDir: URL, to destDir: URL) -> Bool {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(at: extractDir, includingPropertiesForKeys: nil) else {
+            return false
+        }
         var found = false
         for case let url as URL in enumerator {
             let name = url.lastPathComponent.lowercased()
             guard name == "steam_api.dll" || name == "steam_api64.dll" else { continue }
-            let dest = goldbergDir.appending(path: url.lastPathComponent)
+            let dest = destDir.appending(path: url.lastPathComponent)
             try? fm.removeItem(at: dest)
-            try fm.copyItem(at: url, to: dest)
+            try? fm.copyItem(at: url, to: dest)
             found = true
         }
-
-        try? fm.removeItem(at: extractDir)
-        guard found else { throw GoldbergError.dllNotFound }
+        return found
     }
 
     // MARK: - Apply / Remove

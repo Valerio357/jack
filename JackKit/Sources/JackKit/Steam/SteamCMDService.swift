@@ -55,7 +55,16 @@ public final class SteamCMDService: @unchecked Sendable {
         cmdDir.appending(path: "steamcmd.sh")
     }
 
+    private var currentProcess: Process?
+
     private init() {}
+
+    /// Kill any running SteamCMD install/update process.
+    public func cancelCurrentInstall() {
+        currentProcess?.interrupt()
+        currentProcess?.terminate()
+        currentProcess = nil
+    }
 
     // MARK: - Installation
 
@@ -230,6 +239,7 @@ public final class SteamCMDService: @unchecked Sendable {
         process.standardError = pipe
 
         try process.run()
+        currentProcess = process
 
         // Read output in a detached task to drain the pipe and prevent deadlock.
         // The process.waitUntilExit() below blocks the calling thread, but since
@@ -260,6 +270,7 @@ public final class SteamCMDService: @unchecked Sendable {
 
         fullOutput = await outputTask.value
         _ = outputLock  // silence warning
+        currentProcess = nil
 
         return (process.terminationStatus, fullOutput)
     }

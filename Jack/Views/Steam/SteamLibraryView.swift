@@ -79,6 +79,7 @@ final class SteamLibraryViewModel: ObservableObject {
             if !self.games.isEmpty {
                 await checkAllGamesInstalled()
                 await loadSummaries()
+                prefetchInstalledSizes()
             }
         } catch {
             self.errorMessage = "Errore API: \(error.localizedDescription)"
@@ -122,10 +123,47 @@ final class SteamLibraryViewModel: ObservableObject {
 
     func fetchSizeForSelectedGame() async {
         guard let game = selectedGame else { return }
-        if gameSizesGB[game.appid] != nil { return }
+        let appID = game.appid
 
-        let size = await SteamAPIClient.getGameSizeGB(appID: game.appid)
-        self.gameSizesGB[game.appid] = size ?? 0.0
+        // Installed → real disk size (accurate, no API needed)
+        if case .installed = (installStates[appID] ?? .notInstalled) {
+            let dir = SteamCMDService.gameInstallDir(appID: appID)
+            let size = await Task.detached(priority: .background) {
+                SteamLibraryViewModel.dirSizeGB(dir)
+            }.value
+            self.gameSizesGB[appID] = size
+            return
+        }
+
+        if gameSizesGB[appID] != nil { return }
+        let size = await SteamAPIClient.getGameSizeGB(appID: appID)
+        self.gameSizesGB[appID] = size  // nil = "N/D" (not "Sconosciuta")
+    }
+
+    /// Pre-calculate disk sizes for already-installed games immediately.
+    private func prefetchInstalledSizes() {
+        Task.detached(priority: .background) {
+            for game in await self.games {
+                let appID = game.appid
+                if case .installed = await (self.installStates[appID] ?? .notInstalled) {
+                    let size = SteamLibraryViewModel.dirSizeGB(SteamCMDService.gameInstallDir(appID: appID))
+                    await MainActor.run { self.gameSizesGB[appID] = size }
+                }
+            }
+        }
+    }
+
+    nonisolated static func dirSizeGB(_ url: URL) -> Double {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
+        ) else { return 0 }
+        var total: UInt64 = 0
+        while let file = enumerator.nextObject() as? URL {
+            let vals = try? file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            if vals?.isRegularFile == true, let s = vals?.fileSize { total += UInt64(s) }
+        }
+        return Double(total) / (1024 * 1024 * 1024)
     }
 }
 
@@ -340,10 +378,12 @@ struct GameDetailPanel: View {
     @Binding var installLog: String
     @ObservedObject var bottle: Bottle
 
+    @AppStorage("steamUserID") private var steamUserID = ""
     @State private var launchError: String?
     @State private var windowedMode: Bool = false
     @State private var goldbergEnabled: Bool = false
     @State private var showUninstallConfirm: Bool = false
+    @State private var backupStatus: String? = nil
 
     var body: some View {
         ZStack {
@@ -379,53 +419,96 @@ struct GameDetailPanel: View {
                             }
                         }
 
+                        // ── Info card ───────────────────────────────────
                         DetailCard {
-                            VStack(alignment: .leading, spacing: 16) {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: 14) {
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 3) {
                                         Text("Compatibilità ProtonDB")
-                                            .font(.jackCaption)
-                                            .foregroundStyle(.white.opacity(0.5))
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(.white.opacity(0.4))
+                                            .textCase(.uppercase)
                                         Text(summary.tier.displayName)
                                             .font(.system(size: 20, weight: .bold))
                                             .foregroundStyle(summary.tier.jackColor)
+                                        Text("\(summary.totalReports) report · \(Int(summary.stars * 10) / 10 == 0 ? "" : String(format: "%.1f", summary.stars))★")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.white.opacity(0.35))
                                     }
                                     Spacer()
                                     CompatBadgeLarge(tier: summary.tier)
                                 }
-
-                                Divider().background(Color.white.opacity(0.1))
-
-                                Grid(alignment: .leading, verticalSpacing: 12) {
-                                    GridRow {
-                                        MetadataLabel(title: "DirectX", value: "11/12")
-                                        MetadataLabel(title: "Anti-cheat", value: "Nessuno")
-                                    }
-                                    GridRow {
-                                        MetadataLabel(title: "Dimensione", value: formattedSize)
-                                        MetadataLabel(title: "Playtime", value: "\(game.playtimeHours)h")
-                                    }
+                                Divider().background(Color.white.opacity(0.08))
+                                HStack(spacing: 0) {
+                                    MetadataLabel(title: "Dimensione", value: formattedSize)
+                                    MetadataLabel(title: "Playtime", value: "\(game.playtimeHours)h")
+                                    MetadataLabel(title: "Anti-cheat", value: "Nessuno")
                                 }
                             }
                         }
 
-                        VStack(spacing: 16) {
+                        // ── Opzioni di lancio ────────────────────────────
+                        DetailCard {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("OPZIONI DI LANCIO")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.35))
+
+                                rendererPicker
+
+                                Divider().background(Color.white.opacity(0.06))
+
+                                Toggle(isOn: $windowedMode) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "macwindow")
+                                            .foregroundStyle(.white.opacity(0.6))
+                                        Text("Modalità finestra")
+                                            .font(.system(size: 12, weight: .medium))
+                                        Text("· fix schermo nero")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.white.opacity(0.3))
+                                    }
+                                }
+                                .toggleStyle(.switch).tint(Color.jackAccent)
+                                .onChange(of: windowedMode) { _, v in
+                                    UserDefaults.standard.set(v, forKey: "windowed_\(game.appid)")
+                                }
+
+                                Toggle(isOn: $goldbergEnabled) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "person.slash")
+                                            .foregroundStyle(.white.opacity(0.6))
+                                        Text("Modalità offline (Goldberg)")
+                                            .font(.system(size: 12, weight: .medium))
+                                        Text("· fix DRM")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.white.opacity(0.3))
+                                    }
+                                }
+                                .toggleStyle(.switch).tint(Color.jackAccent)
+                                .onChange(of: goldbergEnabled) { _, v in
+                                    UserDefaults.standard.set(v, forKey: "goldberg_\(game.appid)")
+                                }
+                            }
+                        }
+
+                        // ── Salvataggi ───────────────────────────────────
+                        if case .installed = installState {
+                            savesCard
+                        }
+
+                        // ── Azioni ───────────────────────────────────────
+                        VStack(spacing: 10) {
                             if case .downloading(let p) = installState {
                                 downloadProgress(progress: p)
                             }
 
-                            rendererPicker
-                            windowedToggle
-                            goldbergToggle
-
                             actionButton
 
-                            if showCancelButton {
-                                cancelBtn
-                            }
+                            if showCancelButton { cancelBtn }
 
                             if steamUsername.isEmpty && installState == .notInstalled {
-                                Text("Configura lo username Steam nelle Impostazioni per installare giochi.")
+                                Text("Configura lo username Steam nelle Impostazioni.")
                                     .font(.jackCaption)
                                     .foregroundStyle(.white.opacity(0.4))
                                     .multilineTextAlignment(.center)
@@ -438,9 +521,7 @@ struct GameDetailPanel: View {
                                     .multilineTextAlignment(.center)
                             }
 
-                            if case .installed = installState {
-                                uninstallButton
-                            }
+                            if case .installed = installState { uninstallButton }
                         }
                     }
                     .padding(24)
@@ -488,23 +569,7 @@ struct GameDetailPanel: View {
         }
     }
 
-    private var windowedToggle: some View {
-        Toggle(isOn: $windowedMode) {
-            VStack(alignment: .leading, spacing: 2) {
-                Label("Modalità finestra", systemImage: "macwindow")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.8))
-                Text("Fix schermo nero. Usa una finestra macOS invece del fullscreen.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.35))
-            }
-        }
-        .toggleStyle(.switch)
-        .tint(Color.jackAccent)
-        .onChange(of: windowedMode) { _, value in
-            UserDefaults.standard.set(value, forKey: "windowed_\(game.appid)")
-        }
-    }
+    private var windowedToggle: some View { EmptyView() }
 
     private var uninstallButton: some View {
         Button(role: .destructive) {
@@ -534,28 +599,161 @@ struct GameDetailPanel: View {
         installState = .notInstalled
     }
 
-    private var goldbergToggle: some View {
-        Toggle(isOn: $goldbergEnabled) {
-            VStack(alignment: .leading, spacing: 2) {
-                Label("Modalità offline (Goldberg)", systemImage: "person.slash")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.8))
-                Text("Sostituisce steam_api.dll con Goldberg Emu. Fix DRM per giochi posseduti.")
-                    .font(.system(size: 11))
+    private var goldbergToggle: some View { EmptyView() }
+
+    private var formattedSize: String {
+        guard let size = gameSizeGB else { return "…" }
+        if size == 0.0 { return "N/D" }
+        if size < 1.0 { return String(format: "%.0f MB", size * 1024) }
+        return String(format: "%.1f GB", size)
+    }
+
+    // MARK: - Saves card
+
+    private var savesCard: some View {
+        DetailCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("SALVATAGGI")
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.white.opacity(0.35))
+
+                // Save directory path
+                let saveDir = savesDirectory
+                HStack(spacing: 8) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(.white.opacity(0.4))
+                        .font(.system(size: 12))
+                    Text(saveDir?.lastPathComponent ?? "N/D")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .lineLimit(1)
+                    Spacer()
+                    if let dir = saveDir {
+                        Button {
+                            NSWorkspace.shared.open(dir)
+                        } label: {
+                            Text("Apri")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.jackAccent)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Divider().background(Color.white.opacity(0.06))
+
+                HStack(spacing: 10) {
+                    Button {
+                        backupSaves()
+                    } label: {
+                        Label("Backup", systemImage: "arrow.up.doc")
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(maxWidth: .infinity, minHeight: 30)
+                            .background(Color.white.opacity(0.07))
+                            .foregroundStyle(.white.opacity(0.8))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(savesDirectory == nil)
+
+                    Button {
+                        restoreSaves()
+                    } label: {
+                        Label("Ripristina", systemImage: "arrow.down.doc")
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(maxWidth: .infinity, minHeight: 30)
+                            .background(Color.white.opacity(0.07))
+                            .foregroundStyle(.white.opacity(0.8))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!hasBackup)
+                }
+
+                if let status = backupStatus {
+                    Text(status)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.45))
+                }
             }
-        }
-        .toggleStyle(.switch)
-        .tint(Color.jackAccent)
-        .onChange(of: goldbergEnabled) { _, value in
-            UserDefaults.standard.set(value, forKey: "goldberg_\(game.appid)")
         }
     }
 
-    private var formattedSize: String {
-        guard let size = gameSizeGB else { return "Recupero…" }
-        if size == 0.0 { return "Sconosciuta" }
-        return "\(Int(size)) GB"
+    // Find save directory: userdata inside bottle (Steam standard) or Goldberg local
+    private var savesDirectory: URL? {
+        // 1. Goldberg local saves (if active)
+        let gameDir = SteamCMDService.gameInstallDir(appID: game.appid)
+        if let exeURL = SteamCMDService.findGameExecutable(in: gameDir) {
+            let goldbergSaves = exeURL.deletingLastPathComponent()
+                .appending(path: "steam_settings")
+                .appending(path: "USERDATA")
+            if FileManager.default.fileExists(atPath: goldbergSaves.path(percentEncoded: false)) {
+                return goldbergSaves
+            }
+        }
+        // 2. Standard Steam userdata in Wine bottle
+        if !steamUserID.isEmpty, let id64 = Int64(steamUserID) {
+            let steamID3 = id64 - 76561197960265728
+            let udPath = bottle.url
+                .appending(path: "drive_c")
+                .appending(path: "Program Files (x86)")
+                .appending(path: "Steam")
+                .appending(path: "userdata")
+                .appending(path: "\(steamID3)")
+                .appending(path: "\(game.appid)")
+                .appending(path: "remote")
+            if FileManager.default.fileExists(atPath: udPath.path(percentEncoded: false)) {
+                return udPath
+            }
+        }
+        return nil
+    }
+
+    private var backupDir: URL {
+        BottleData.steamCMDDir
+            .appending(path: "saves")
+            .appending(path: "\(game.appid)")
+    }
+
+    private var hasBackup: Bool {
+        FileManager.default.fileExists(atPath: backupDir.path(percentEncoded: false))
+    }
+
+    private func backupSaves() {
+        guard let src = savesDirectory else { return }
+        let dest = backupDir
+        Task {
+            do {
+                let fm = FileManager.default
+                try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if fm.fileExists(atPath: dest.path(percentEncoded: false)) {
+                    try fm.removeItem(at: dest)
+                }
+                try fm.copyItem(at: src, to: dest)
+                let fmt = DateFormatter()
+                fmt.dateStyle = .short; fmt.timeStyle = .short
+                backupStatus = "Backup: \(fmt.string(from: Date()))"
+            } catch {
+                backupStatus = "Errore backup: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func restoreSaves() {
+        guard let dest = savesDirectory else { return }
+        let src = backupDir
+        Task {
+            do {
+                let fm = FileManager.default
+                if fm.fileExists(atPath: dest.path(percentEncoded: false)) {
+                    try fm.removeItem(at: dest)
+                }
+                try fm.copyItem(at: src, to: dest)
+                backupStatus = "Ripristino completato ✓"
+            } catch {
+                backupStatus = "Errore ripristino: \(error.localizedDescription)"
+            }
+        }
     }
 
     private var showCancelButton: Bool {
@@ -567,9 +765,12 @@ struct GameDetailPanel: View {
 
     private var cancelBtn: some View {
         Button {
+            // Kill the SteamCMD process, not just update UI state
+            SteamCMDService.shared.cancelCurrentInstall()
             installState = .notInstalled
+            installLog = ""
         } label: {
-            Text("Annulla")
+            Text("Annulla download")
                 .font(.jackCaption)
                 .foregroundStyle(.red.opacity(0.8))
         }
@@ -804,6 +1005,19 @@ struct GameDetailPanel: View {
                     "reg", "delete", "HKCU\\Software\\Wine\\Explorer",
                     "/v", "Desktop", "/f"
                 ], bottle: bottle)
+            }
+
+            // --- Auto-backup saves before launch ---
+            if let saveDir = savesDirectory {
+                let dest = backupDir
+                Task.detached {
+                    let fm = FileManager.default
+                    try? fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    if fm.fileExists(atPath: dest.path(percentEncoded: false)) {
+                        try? fm.removeItem(at: dest)
+                    }
+                    try? fm.copyItem(at: saveDir, to: dest)
+                }
             }
 
             // --- Launch ---
