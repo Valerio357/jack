@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:apple.stackexchange.com)",
+      "WebFetch(domain:www.portingkit.com)",
+      "WebFetch(domain:bbs.archlinux.org)",
+      "WebFetch(domain:www.codeweavers.com)",
+      "WebFetch(domain:mybyways.com)",
+      "WebFetch(domain:www.applegamingwiki.com)",
+      "Bash(xcodebuild:*)",
+      "Bash(ls:*)",
+      "WebFetch(domain:gitlab.com)",
+      "WebFetch(domain:codeberg.org)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl:*)"
+    ]
+  }
+}

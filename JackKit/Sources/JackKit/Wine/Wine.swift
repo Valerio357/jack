@@ -242,6 +242,320 @@ public class Wine {
         return result
     }
 
+    // MARK: - Steam DRM daemon
+
+    /// Launch steam.exe silently inside the bottle as a background DRM daemon.
+    /// Uses research-backed fixes for the steamwebhelper dialog on Wine macOS 2024+:
+    ///   - chmod -x steamwebhelper.exe (Steam still runs for IPC, no browser UI needed)
+    ///   - BootStrapperInhibitAll=enable in steam.cfg (blocks auto-update that re-breaks it)
+    ///   - -allosarches -cef-force-32bit (avoids chrome_elf.dll abort on 64-bit CEF)
+    ///   - LANG=en_US.UTF-8 (prevents HTTP_ParseDate locale bug e.g. Netherlands)
+    /// Returns true if Steam has been logged in at least once in the bottle
+    /// (loginusers.vdf exists and is non-empty).
+    public static func isSteamLoggedIn(in bottle: Bottle) -> Bool {
+        let loginFile = BottleData.steamDir
+            .appending(path: "config")
+            .appending(path: "loginusers.vdf")
+        guard let data = try? Data(contentsOf: loginFile),
+              let text = String(data: data, encoding: .utf8) else { return false }
+        // loginusers.vdf has at least one user entry if logged in
+        return text.contains("\"users\"") && text.count > 50
+    }
+
+    /// Perform a one-time interactive login to steam.exe with username+password.
+    /// Launches steam.exe with `-login user pass -silent`, which authenticates in the background.
+    /// The user must approve Steam Guard on their phone. After that, credentials are cached
+    /// and `launchSteamDaemon` can use `-login username` without a password.
+    public static func loginSteamInteractive(
+        bottle: Bottle, username: String, password: String
+    ) async throws {
+        let steamExe = BottleData.steamDir.appending(path: "steam.exe")
+        guard FileManager.default.fileExists(atPath: steamExe.path(percentEncoded: false)) else {
+            throw SteamDaemonError.steamExeNotFound
+        }
+
+        // Replace steamwebhelper with sleeping stub (keeps it "alive" so no dialog)
+        // but do NOT write steam.cfg — BootStrapperInhibitAll blocks the auth flow.
+        replaceSteamWebHelper()
+
+        // Remove steam.cfg if present: BootStrapperInhibitAll=enable blocks login
+        let steamCfg = BottleData.steamDir.appending(path: "steam.cfg")
+        try? FileManager.default.removeItem(at: steamCfg)
+
+        var env = constructWineEnvironment(for: bottle)
+        env["LANG"] = "en_US.UTF-8"
+        env["LC_ALL"] = "en_US.UTF-8"
+
+        let process = Process()
+        process.executableURL = wineBinary
+        process.arguments = [
+            "start", "/unix", steamExe.path(percentEncoded: false),
+            "-login", username, password,
+            "-silent", "-allosarches", "-cef-force-32bit", "-no-dwrite"
+        ]
+        process.environment = env
+        process.currentDirectoryURL = wineBinary.deletingLastPathComponent()
+        try process.run()
+    }
+
+    /// Replace steamwebhelper.exe with the sleeping stub without writing steam.cfg.
+    /// Used during login (steam.cfg blocks auth).
+    private static func replaceSteamWebHelper() {
+        let fm = FileManager.default
+        guard let e = fm.enumerator(at: BottleData.steamDir, includingPropertiesForKeys: [.fileSizeKey]) else { return }
+        for case let url as URL in e {
+            guard url.lastPathComponent.lowercased() == "steamwebhelper.exe" else { continue }
+            let path = url.path(percentEncoded: false)
+            if let existing = try? Data(contentsOf: url),
+               existing.count == sleepingStubPE.count,
+               existing.count > 0x9D,
+               existing[0x9C] == 2 { continue }
+            let backup = path + ".original_jack"
+            if !fm.fileExists(atPath: backup) {
+                try? fm.copyItem(atPath: path, toPath: backup)
+            }
+            fm.createFile(atPath: path, contents: sleepingStubPE)
+        }
+    }
+
+    /// Launch steam.exe silently as a DRM daemon.
+    /// - Parameter username: Steam account username for auto-login (required for DRM).
+    @discardableResult
+    public static func launchSteamDaemon(bottle: Bottle, username: String = "") throws -> Process {
+        prepareSteamForDaemon()
+
+        let steamExe = BottleData.steamDir.appending(path: "steam.exe")
+        guard FileManager.default.fileExists(atPath: steamExe.path(percentEncoded: false)) else {
+            throw SteamDaemonError.steamExeNotFound
+        }
+
+        var env = constructWineEnvironment(for: bottle)
+        env["LANG"] = "en_US.UTF-8"
+        env["LC_ALL"] = "en_US.UTF-8"
+
+        var args = [
+            "start", "/unix", steamExe.path(percentEncoded: false),
+            "-allosarches", "-cef-force-32bit",
+            "-nofriendsui", "-silent", "-no-dwrite"
+        ]
+        // -login is required for DRM: without it steam.exe starts but isn't authenticated
+        if !username.isEmpty {
+            args += ["-login", username]
+        }
+
+        let process = Process()
+        process.executableURL = wineBinary
+        process.arguments = args
+        process.environment = env
+        process.currentDirectoryURL = wineBinary.deletingLastPathComponent()
+        try process.run()
+        return process
+    }
+
+    /// Open steam.exe with full UI so the user can log in interactively (one-time setup).
+    /// After this, launchSteamDaemon can auto-login with cached credentials.
+    /// NOTE: restores the original steamwebhelper.exe so the Steam UI can render.
+    public static func launchSteamForSetup(bottle: Bottle) throws {
+        let steamExe = BottleData.steamDir.appending(path: "steam.exe")
+        guard FileManager.default.fileExists(atPath: steamExe.path(percentEncoded: false)) else {
+            throw SteamDaemonError.steamExeNotFound
+        }
+        // Restore original steamwebhelper so Steam can render its CEF/login UI.
+        // Do NOT call prepareSteamForDaemon() here — that replaces steamwebhelper
+        // with a sleeping stub which kills all UI rendering.
+        restoreSteamWebHelper()
+
+        var env = constructWineEnvironment(for: bottle)
+        env["LANG"] = "en_US.UTF-8"
+        env["LC_ALL"] = "en_US.UTF-8"
+
+        let process = Process()
+        process.executableURL = wineBinary
+        process.arguments = [
+            "start", "/unix", steamExe.path(percentEncoded: false),
+            "-allosarches", "-no-dwrite"
+            // No -silent, no -cef-force-32bit: allow full CEF UI for login
+        ]
+        process.environment = env
+        process.currentDirectoryURL = wineBinary.deletingLastPathComponent()
+        try process.run()
+    }
+
+    /// Restore the original steamwebhelper.exe from backup (if it was replaced by the sleeping stub).
+    public static func restoreSteamWebHelper() {
+        let fm = FileManager.default
+        guard let e = fm.enumerator(at: BottleData.steamDir, includingPropertiesForKeys: []) else { return }
+        for case let url as URL in e {
+            guard url.lastPathComponent.lowercased() == "steamwebhelper.exe" else { continue }
+            let backup = url.path(percentEncoded: false) + ".original_jack"
+            guard fm.fileExists(atPath: backup) else { continue }
+            try? fm.removeItem(at: url)
+            try? fm.copyItem(atPath: backup, toPath: url.path(percentEncoded: false))
+        }
+    }
+
+    /// Prepare Steam installation to suppress the steamwebhelper dialog.
+    ///
+    /// Root cause: Steam 2024+ checks that steamwebhelper.exe is ALIVE (not just launched).
+    /// Neither dummy-PE-that-exits nor chmod-x work — Steam shows the dialog in both cases.
+    ///
+    /// Fix: replace steamwebhelper.exe with a "sleeping stub" PE that imports
+    /// kernel32.dll!Sleep and calls Sleep(INFINITE) in a loop. The process stays
+    /// resident → Steam's monitor sees it as alive → no dialog. Uses ~0% CPU.
+    public static func prepareSteamForDaemon() {
+        let fm = FileManager.default
+
+        // 1. steam.cfg: block auto-update (would restore real steamwebhelper)
+        let steamCfg = BottleData.steamDir.appending(path: "steam.cfg")
+        let cfgContent = "BootStrapperInhibitAll=enable\nBootStrapperForceSelfUpdate=disable\n"
+        try? cfgContent.write(to: steamCfg, atomically: true, encoding: .utf8)
+
+        // 2. Replace steamwebhelper.exe with a sleeping stub.
+        //    The stub imports kernel32!Sleep and calls Sleep(0xFFFFFFFF) in a loop.
+        //    Steam detects it as alive → no "Steamwebhelper not responding" dialog.
+        for searchDir in [BottleData.steamDir] {
+            guard let e = fm.enumerator(at: searchDir, includingPropertiesForKeys: [.fileSizeKey]) else { continue }
+            for case let url as URL in e {
+                guard url.lastPathComponent.lowercased() == "steamwebhelper.exe" else { continue }
+                let path = url.path(percentEncoded: false)
+                // Skip only if already replaced with the GUI stub (check size + subsystem byte 0x9C = 2)
+                if let existing = try? Data(contentsOf: url),
+                   existing.count == sleepingStubPE.count,
+                   existing.count > 0x9D,
+                   existing[0x9C] == 2 { continue }
+                // Backup original
+                let backup = path + ".original_jack"
+                if !fm.fileExists(atPath: backup) {
+                    try? fm.copyItem(atPath: path, toPath: backup)
+                }
+                fm.createFile(atPath: path, contents: sleepingStubPE)
+            }
+        }
+    }
+
+    public static func disableSteamWebHelper(bottle: Bottle) { prepareSteamForDaemon() }
+
+    public enum SteamDaemonError: LocalizedError {
+        case steamExeNotFound
+        public var errorDescription: String? {
+            "steam.exe non trovato nella bottiglia. Installa Steam prima."
+        }
+    }
+
+    /// PE32 sleeping stub (1536 bytes).
+    /// Imports kernel32.dll!Sleep, calls Sleep(0xFFFFFFFF) in an infinite loop.
+    /// Used to replace steamwebhelper.exe so Steam thinks it's alive (no dialog).
+    ///
+    /// Layout:
+    ///   0x000–0x1FF  headers (.rdata VirtualAddr=0x1000, .text VirtualAddr=0x2000)
+    ///   0x200–0x3FF  .rdata: import table → kernel32.dll!Sleep
+    ///   0x400–0x5FF  .text:  push 0xFFFFFFFF; call [IAT_Sleep]; jmp back
+    private static let sleepingStubPE: Data = {
+        var pe = Data(count: 0x600)
+
+        // ── DOS Header ──────────────────────────────────────────────────────
+        pe[0x00] = 0x4D; pe[0x01] = 0x5A          // MZ
+        pe.withUnsafeMutableBytes { b in
+            b.storeBytes(of: UInt32(0x40).littleEndian, toByteOffset: 0x3C, as: UInt32.self) // e_lfanew
+        }
+
+        // ── PE Signature ────────────────────────────────────────────────────
+        pe[0x40] = 0x50; pe[0x41] = 0x45           // "PE\0\0"
+
+        pe.withUnsafeMutableBytes { b in
+            // ── COFF Header (at 0x44) ────────────────────────────────────────
+            b.storeBytes(of: UInt16(0x014C).littleEndian, toByteOffset: 0x44, as: UInt16.self) // i386
+            b.storeBytes(of: UInt16(2).littleEndian,      toByteOffset: 0x46, as: UInt16.self) // 2 sections
+            b.storeBytes(of: UInt16(0x00E0).littleEndian, toByteOffset: 0x54, as: UInt16.self) // OptHdr size
+            b.storeBytes(of: UInt16(0x0103).littleEndian, toByteOffset: 0x56, as: UInt16.self) // RELOCS_STRIPPED|EXEC|32BIT
+
+            // ── Optional Header PE32 (at 0x58) ──────────────────────────────
+            b.storeBytes(of: UInt16(0x010B).littleEndian, toByteOffset: 0x58, as: UInt16.self) // PE32
+            b.storeBytes(of: UInt32(0x0200).littleEndian, toByteOffset: 0x5C, as: UInt32.self) // SizeOfCode
+            b.storeBytes(of: UInt32(0x0200).littleEndian, toByteOffset: 0x60, as: UInt32.self) // SizeOfInitData
+            b.storeBytes(of: UInt32(0x2000).littleEndian, toByteOffset: 0x68, as: UInt32.self) // EntryPoint RVA
+            b.storeBytes(of: UInt32(0x2000).littleEndian, toByteOffset: 0x6C, as: UInt32.self) // BaseOfCode
+            b.storeBytes(of: UInt32(0x1000).littleEndian, toByteOffset: 0x70, as: UInt32.self) // BaseOfData
+            b.storeBytes(of: UInt32(0x00400000).littleEndian, toByteOffset: 0x74, as: UInt32.self) // ImageBase
+            b.storeBytes(of: UInt32(0x1000).littleEndian, toByteOffset: 0x78, as: UInt32.self) // SectionAlign
+            b.storeBytes(of: UInt32(0x0200).littleEndian, toByteOffset: 0x7C, as: UInt32.self) // FileAlign
+            b.storeBytes(of: UInt16(4).littleEndian,      toByteOffset: 0x80, as: UInt16.self) // MajorOSVer
+            b.storeBytes(of: UInt16(4).littleEndian,      toByteOffset: 0x88, as: UInt16.self) // MajorSubsysVer
+            b.storeBytes(of: UInt32(0x4000).littleEndian, toByteOffset: 0x90, as: UInt32.self) // SizeOfImage
+            b.storeBytes(of: UInt32(0x0200).littleEndian, toByteOffset: 0x94, as: UInt32.self) // SizeOfHeaders
+            b.storeBytes(of: UInt16(2).littleEndian,      toByteOffset: 0x9C, as: UInt16.self) // Subsystem=GUI (no console window)
+            b.storeBytes(of: UInt32(0x100000).littleEndian, toByteOffset: 0xA0, as: UInt32.self)
+            b.storeBytes(of: UInt32(0x001000).littleEndian, toByteOffset: 0xA4, as: UInt32.self)
+            b.storeBytes(of: UInt32(0x100000).littleEndian, toByteOffset: 0xA8, as: UInt32.self)
+            b.storeBytes(of: UInt32(0x001000).littleEndian, toByteOffset: 0xAC, as: UInt32.self)
+            b.storeBytes(of: UInt32(16).littleEndian,     toByteOffset: 0xB4, as: UInt32.self) // NumDirs
+            // DataDirectory[1] = Import Table: RVA=0x1000, Size=0x50
+            b.storeBytes(of: UInt32(0x1000).littleEndian, toByteOffset: 0xC0, as: UInt32.self)
+            b.storeBytes(of: UInt32(0x0050).littleEndian, toByteOffset: 0xC4, as: UInt32.self)
+
+            // ── Section header 1: .rdata (at 0x138) ─────────────────────────
+            // ".rdata\0\0"
+            let rn: [UInt8] = [0x2E,0x72,0x64,0x61,0x74,0x61,0x00,0x00]
+            for i in 0..<8 { b.storeBytes(of: rn[i], toByteOffset: 0x138+i, as: UInt8.self) }
+            b.storeBytes(of: UInt32(0x60).littleEndian,   toByteOffset: 0x140, as: UInt32.self) // VirtualSize
+            b.storeBytes(of: UInt32(0x1000).littleEndian, toByteOffset: 0x144, as: UInt32.self) // VirtualAddr
+            b.storeBytes(of: UInt32(0x0200).littleEndian, toByteOffset: 0x148, as: UInt32.self) // RawSize
+            b.storeBytes(of: UInt32(0x0200).littleEndian, toByteOffset: 0x14C, as: UInt32.self) // RawPtr
+            b.storeBytes(of: UInt32(0x40000040).littleEndian, toByteOffset: 0x15C, as: UInt32.self) // DATA|READ
+
+            // ── Section header 2: .text (at 0x160) ──────────────────────────
+            // ".text\0\0\0"
+            let tn: [UInt8] = [0x2E,0x74,0x65,0x78,0x74,0x00,0x00,0x00]
+            for i in 0..<8 { b.storeBytes(of: tn[i], toByteOffset: 0x160+i, as: UInt8.self) }
+            b.storeBytes(of: UInt32(0x0D).littleEndian,   toByteOffset: 0x168, as: UInt32.self) // VirtualSize=13
+            b.storeBytes(of: UInt32(0x2000).littleEndian, toByteOffset: 0x16C, as: UInt32.self) // VirtualAddr
+            b.storeBytes(of: UInt32(0x0200).littleEndian, toByteOffset: 0x170, as: UInt32.self) // RawSize
+            b.storeBytes(of: UInt32(0x0400).littleEndian, toByteOffset: 0x174, as: UInt32.self) // RawPtr
+            b.storeBytes(of: UInt32(0x60000020).littleEndian, toByteOffset: 0x184, as: UInt32.self) // CODE|EXEC|READ
+
+            // ── .rdata section (file offset 0x200 = VA 0x401000) ────────────
+            // IMAGE_IMPORT_DESCRIPTOR for kernel32.dll
+            //   OriginalFirstThunk = 0x1028 (ILT RVA)
+            b.storeBytes(of: UInt32(0x1028).littleEndian, toByteOffset: 0x200, as: UInt32.self)
+            //   Name = 0x1040 ("kernel32.dll")
+            b.storeBytes(of: UInt32(0x1040).littleEndian, toByteOffset: 0x20C, as: UInt32.self)
+            //   FirstThunk = 0x1020 (IAT RVA — Sleep address slot)
+            b.storeBytes(of: UInt32(0x1020).littleEndian, toByteOffset: 0x210, as: UInt32.self)
+            // Null descriptor at 0x214 (zeros — already)
+
+            // IAT at 0x220 (RVA 0x1020): initially → hint+name RVA, patched by loader
+            b.storeBytes(of: UInt32(0x1030).littleEndian, toByteOffset: 0x220, as: UInt32.self)
+            // IAT terminator at 0x224: 0
+
+            // ILT at 0x228 (RVA 0x1028)
+            b.storeBytes(of: UInt32(0x1030).littleEndian, toByteOffset: 0x228, as: UInt32.self)
+            // ILT terminator at 0x22C: 0
+
+            // IMAGE_IMPORT_BY_NAME at 0x230 (RVA 0x1030): hint=0, name="Sleep\0"
+            // hint = 0 (already)
+            let sn: [UInt8] = [0x53,0x6C,0x65,0x65,0x70,0x00]  // "Sleep\0"
+            for i in 0..<6 { b.storeBytes(of: sn[i], toByteOffset: 0x232+i, as: UInt8.self) }
+
+            // "kernel32.dll\0" at 0x240 (RVA 0x1040)
+            let k: [UInt8] = [0x6B,0x65,0x72,0x6E,0x65,0x6C,0x33,0x32,0x2E,0x64,0x6C,0x6C,0x00]
+            for i in 0..<13 { b.storeBytes(of: k[i], toByteOffset: 0x240+i, as: UInt8.self) }
+
+            // ── .text section (file offset 0x400 = VA 0x402000) ─────────────
+            // push 0xFFFFFFFF (INFINITE)   → 68 FF FF FF FF
+            b.storeBytes(of: UInt8(0x68),          toByteOffset: 0x400, as: UInt8.self)
+            b.storeBytes(of: UInt32(0xFFFFFFFF).littleEndian, toByteOffset: 0x401, as: UInt32.self)
+            // call dword ptr [0x00401020]  → FF 15 20 10 40 00  (IAT Sleep slot)
+            b.storeBytes(of: UInt8(0xFF),          toByteOffset: 0x405, as: UInt8.self)
+            b.storeBytes(of: UInt8(0x15),          toByteOffset: 0x406, as: UInt8.self)
+            b.storeBytes(of: UInt32(0x00401020).littleEndian, toByteOffset: 0x407, as: UInt32.self)
+            // jmp short -13 (back to push)  → EB F3
+            // Next IP = 0x40D; 0x40D + sign(0xF3) = 0x40D - 0x0D = 0x400 ✓
+            b.storeBytes(of: UInt8(0xEB),          toByteOffset: 0x40B, as: UInt8.self)
+            b.storeBytes(of: UInt8(0xF3),          toByteOffset: 0x40C, as: UInt8.self)
+        }
+        return pe
+    }()
+
     /// Construct an environment merging the bottle values with the given values
     private static func constructWineServerEnvironment(
         for bottle: Bottle, environment: [String: String] = [:]

@@ -29,7 +29,8 @@ public final class GoldbergService: @unchecked Sendable {
     public static let shared = GoldbergService()
 
     private let goldbergDir = BottleData.steamCMDDir.appending(path: "Goldberg")
-    private static let githubAPI = "https://api.github.com/repos/otavepto/gbe_fork/releases/latest"
+    // Direct download URL for Goldberg Steam Emulator v0.2.5 (stable, .zip, no 7z dependency)
+    private static let downloadURL = "https://gitlab.com/Mr_Goldberg/goldberg_emulator/uploads/2524331e488ec6399c396cf48bbe9903/Goldberg_Lan_Steam_Emu_v0.2.5.zip"
 
     private var dll32: URL { goldbergDir.appending(path: "steam_api.dll") }
     private var dll64: URL { goldbergDir.appending(path: "steam_api64.dll") }
@@ -50,28 +51,9 @@ public final class GoldbergService: @unchecked Sendable {
         let fm = FileManager.default
         try fm.createDirectory(at: goldbergDir, withIntermediateDirectories: true)
 
-        // Fetch latest release metadata from GitHub
-        guard let apiURL = URL(string: Self.githubAPI) else { throw GoldbergError.downloadFailed }
-        var request = URLRequest(url: apiURL)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        guard let url = URL(string: Self.downloadURL) else { throw GoldbergError.downloadFailed }
 
-        let (apiData, _) = try await URLSession.shared.data(for: request)
-        let release = try JSONDecoder().decode(GitHubRelease.self, from: apiData)
-
-        // Find the Windows release zip (look for "win" in name)
-        guard let asset = release.assets.first(where: {
-            let n = $0.name.lowercased()
-            return n.contains("win") && n.hasSuffix(".zip")
-        }) ?? release.assets.first(where: { $0.name.hasSuffix(".zip") }) else {
-            throw GoldbergError.releaseNotFound
-        }
-
-        guard let downloadURL = URL(string: asset.browser_download_url) else {
-            throw GoldbergError.downloadFailed
-        }
-
-        // Download zip
-        let (tempZip, response) = try await URLSession.shared.download(from: downloadURL)
+        let (tempZip, response) = try await URLSession.shared.download(from: url)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw GoldbergError.downloadFailed
         }
@@ -91,13 +73,20 @@ public final class GoldbergService: @unchecked Sendable {
 
         guard unzip.terminationStatus == 0 else { throw GoldbergError.extractionFailed }
 
-        // Find and copy steam_api*.dll — done synchronously to avoid Sendable issues
+        // Find and copy steam_api*.dll
         let found = Self.copyDLLs(from: extractDir, to: goldbergDir)
         try? fm.removeItem(at: extractDir)
         guard found else { throw GoldbergError.dllNotFound }
     }
 
     // MARK: - Private helpers
+
+    /// DLL names to extract from the Goldberg zip.
+    /// steamclient*.dll are in experimental/ and needed to prevent loading the real Steam client.
+    private static let goldbergDLLNames: Set<String> = [
+        "steam_api.dll", "steam_api64.dll",
+        "steamclient.dll", "steamclient64.dll"
+    ]
 
     private static func copyDLLs(from extractDir: URL, to destDir: URL) -> Bool {
         let fm = FileManager.default
@@ -107,11 +96,11 @@ public final class GoldbergService: @unchecked Sendable {
         var found = false
         for case let url as URL in enumerator {
             let name = url.lastPathComponent.lowercased()
-            guard name == "steam_api.dll" || name == "steam_api64.dll" else { continue }
+            guard goldbergDLLNames.contains(name) else { continue }
             let dest = destDir.appending(path: url.lastPathComponent)
             try? fm.removeItem(at: dest)
             try? fm.copyItem(at: url, to: dest)
-            found = true
+            if name.hasPrefix("steam_api") { found = true }
         }
         return found
     }
@@ -138,7 +127,7 @@ public final class GoldbergService: @unchecked Sendable {
         try "".write(to: settingsDir.appending(path: "disable_overlay.txt"),
                      atomically: true, encoding: .utf8)
 
-        // Replace DLLs — also search one level deep for dlls next to sub-exes
+        // Replace steam_api DLLs (backup originals)
         for dllName in ["steam_api.dll", "steam_api64.dll"] {
             let goldbergDLL = goldbergDir.appending(path: dllName)
             guard fm.fileExists(atPath: goldbergDLL.path(percentEncoded: false)) else { continue }
@@ -151,6 +140,16 @@ public final class GoldbergService: @unchecked Sendable {
                 try fm.copyItem(at: target, to: backup)
             }
             try fm.removeItem(at: target)
+            try fm.copyItem(at: goldbergDLL, to: target)
+        }
+
+        // Copy steamclient*.dll to game dir so Goldberg uses its own emulated client
+        // instead of the real Steam one from C:\Program Files (x86)\Steam\
+        for dllName in ["steamclient.dll", "steamclient64.dll"] {
+            let goldbergDLL = goldbergDir.appending(path: dllName)
+            guard fm.fileExists(atPath: goldbergDLL.path(percentEncoded: false)) else { continue }
+            let target = exeDir.appending(path: dllName)
+            try? fm.removeItem(at: target)
             try fm.copyItem(at: goldbergDLL, to: target)
         }
     }
@@ -166,6 +165,10 @@ public final class GoldbergService: @unchecked Sendable {
             try? fm.copyItem(at: backup, to: target)
             try? fm.removeItem(at: backup)
         }
+        // Remove steamclient DLLs added by Goldberg (these don't have backups)
+        for dllName in ["steamclient.dll", "steamclient64.dll"] {
+            try? fm.removeItem(at: exeDir.appending(path: dllName))
+        }
         try? fm.removeItem(at: exeDir.appending(path: "steam_settings"))
     }
 
@@ -179,13 +182,3 @@ public final class GoldbergService: @unchecked Sendable {
     }
 }
 
-// MARK: - GitHub API models
-
-private struct GitHubRelease: Decodable {
-    let assets: [GitHubAsset]
-}
-
-private struct GitHubAsset: Decodable {
-    let name: String
-    let browser_download_url: String
-}

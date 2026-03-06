@@ -59,30 +59,27 @@ final class SteamLibraryViewModel: ObservableObject {
         return base.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
-    func loadGames(steamID: String, apiKey: String) async {
-        guard !steamID.isEmpty else { return }
-        guard !apiKey.isEmpty else {
-            errorMessage = "Aggiungi la Steam API Key nelle Impostazioni."
+    func loadGames(steamID64: String, username: String) async {
+        guard !username.isEmpty else {
+            errorMessage = "Configura le credenziali Steam nelle Impostazioni."
             return
         }
 
         isLoading = true
         errorMessage = nil
 
-        let task = Task.detached(priority: .userInitiated) {
-            return try await SteamAPIClient.getOwnedGames(steamID: steamID, apiKey: apiKey)
-        }
-
         do {
-            self.games = try await task.value
+            self.games = try await SteamAPIClient.getOwnedGames(steamID64: steamID64, username: username)
             self.isLoading = false
-            if !self.games.isEmpty {
+            if self.games.isEmpty {
+                errorMessage = "Nessun gioco trovato. Assicurati che la tua libreria Steam sia pubblica."
+            } else {
                 await checkAllGamesInstalled()
                 await loadSummaries()
                 prefetchInstalledSizes()
             }
         } catch {
-            self.errorMessage = "Errore API: \(error.localizedDescription)"
+            self.errorMessage = error.localizedDescription
             self.isLoading = false
         }
     }
@@ -173,7 +170,6 @@ struct SteamLibraryView: View {
     let bottle: Bottle
 
     @AppStorage("steamUserID") private var steamUserID = ""
-    @AppStorage("steamAPIKey") private var steamAPIKey = ""
     @AppStorage("steamUsername") private var steamUsername = ""
     @StateObject private var viewModel = SteamLibraryViewModel()
 
@@ -219,7 +215,7 @@ struct SteamLibraryView: View {
                         VStack(spacing: 12) {
                             Text(err).font(.jackCaption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                             Button("Riprova") {
-                                Task { await viewModel.loadGames(steamID: steamUserID, apiKey: steamAPIKey) }
+                                Task { await viewModel.loadGames(steamID64: steamUserID, username: steamUsername) }
                             }.buttonStyle(.bordered)
                         }.padding()
                     } else {
@@ -266,7 +262,7 @@ struct SteamLibraryView: View {
             }
         }
         .task {
-            await viewModel.loadGames(steamID: steamUserID, apiKey: steamAPIKey)
+            await viewModel.loadGames(steamID64: steamUserID, username: steamUsername)
         }
     }
 
@@ -384,6 +380,7 @@ struct GameDetailPanel: View {
     @State private var goldbergEnabled: Bool = false
     @State private var showUninstallConfirm: Bool = false
     @State private var backupStatus: String? = nil
+    @State private var cloudSyncStatus: String? = nil
 
     var body: some View {
         ZStack {
@@ -476,18 +473,20 @@ struct GameDetailPanel: View {
 
                                 Toggle(isOn: $goldbergEnabled) {
                                     HStack(spacing: 6) {
-                                        Image(systemName: "person.slash")
-                                            .foregroundStyle(.white.opacity(0.6))
-                                        Text("Modalità offline (Goldberg)")
-                                            .font(.system(size: 12, weight: .medium))
-                                        Text("· fix DRM")
-                                            .font(.system(size: 11))
-                                            .foregroundStyle(.white.opacity(0.3))
+                                        Image(systemName: "shield.checkered")
+                                            .foregroundStyle(Color.jackAccent)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text("Goldberg DRM Bypass")
+                                                .font(.system(size: 12, weight: .medium))
+                                            Text("Per giochi con DRM Steam (es. Dark Souls). Emula steam_api localmente.")
+                                                .font(.system(size: 10))
+                                                .foregroundStyle(.white.opacity(0.3))
+                                        }
                                     }
                                 }
                                 .toggleStyle(.switch).tint(Color.jackAccent)
-                                .onChange(of: goldbergEnabled) { _, v in
-                                    UserDefaults.standard.set(v, forKey: "goldberg_\(game.appid)")
+                                .onChange(of: goldbergEnabled) { newValue in
+                                    UserDefaults.standard.set(newValue, forKey: "goldberg_\(game.appid)")
                                 }
                             }
                         }
@@ -588,9 +587,10 @@ struct GameDetailPanel: View {
 
     private func uninstallGame() {
         let gameDir = SteamCMDService.gameInstallDir(appID: game.appid)
-        // Restore original DLLs before deleting (cleanup)
+        // Restore original DLLs and exe before deleting (cleanup)
         if let exeURL = SteamCMDService.findGameExecutable(in: gameDir) {
             GoldbergService.shared.remove(from: exeURL.deletingLastPathComponent())
+            SteamlessService.shared.restore(exe: exeURL)
         }
         try? FileManager.default.removeItem(at: gameDir)
         // Clear per-game prefs
@@ -602,7 +602,7 @@ struct GameDetailPanel: View {
     private var goldbergToggle: some View { EmptyView() }
 
     private var formattedSize: String {
-        guard let size = gameSizeGB else { return "…" }
+        guard let size = gameSizeGB else { return "N/D" }
         if size == 0.0 { return "N/D" }
         if size < 1.0 { return String(format: "%.0f MB", size * 1024) }
         return String(format: "%.1f GB", size)
@@ -611,70 +611,128 @@ struct GameDetailPanel: View {
     // MARK: - Saves card
 
     private var savesCard: some View {
-        DetailCard {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("SALVATAGGI")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.35))
+        let cloudCount = SteamCloudSyncService.shared.cloudSaveFileCount(
+            appID: game.appid, steamID: steamUserID
+        )
+        let steamInstalled = SteamCloudSyncService.shared.isSteamMacInstalled
 
-                // Save directory path
+        return DetailCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("SALVATAGGI")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.35))
+                    Spacer()
+                    // Steam Mac indicator
+                    if steamInstalled {
+                        Label(cloudCount > 0 ? "\(cloudCount) file su Steam Mac" : "Steam Mac",
+                              systemImage: "checkmark.icloud")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(cloudCount > 0 ? Color.jackSuccess : .white.opacity(0.3))
+                    } else {
+                        Label("Steam Mac non trovato", systemImage: "xmark.icloud")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white.opacity(0.25))
+                    }
+                }
+
+                // Local save directory
                 let saveDir = savesDirectory
                 HStack(spacing: 8) {
                     Image(systemName: "folder")
                         .foregroundStyle(.white.opacity(0.4))
                         .font(.system(size: 12))
-                    Text(saveDir?.lastPathComponent ?? "N/D")
+                    Text(saveDir?.lastPathComponent ?? "Nessun save locale")
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(.white.opacity(saveDir != nil ? 0.5 : 0.25))
                         .lineLimit(1)
                     Spacer()
                     if let dir = saveDir {
-                        Button {
-                            NSWorkspace.shared.open(dir)
-                        } label: {
-                            Text("Apri")
-                                .font(.system(size: 11, weight: .medium))
+                        Button { NSWorkspace.shared.open(dir) } label: {
+                            Text("Apri").font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(Color.jackAccent)
-                        }
-                        .buttonStyle(.plain)
+                        }.buttonStyle(.plain)
                     }
                 }
 
                 Divider().background(Color.white.opacity(0.06))
 
-                HStack(spacing: 10) {
-                    Button {
-                        backupSaves()
-                    } label: {
-                        Label("Backup", systemImage: "arrow.up.doc")
-                            .font(.system(size: 12, weight: .medium))
-                            .frame(maxWidth: .infinity, minHeight: 30)
+                // Sync buttons
+                HStack(spacing: 8) {
+                    if steamInstalled && cloudCount > 0 {
+                        Button {
+                            manualSyncFromCloud()
+                        } label: {
+                            Label("↓ Da Steam", systemImage: "icloud.and.arrow.down")
+                                .font(.system(size: 11, weight: .medium))
+                                .frame(maxWidth: .infinity, minHeight: 28)
+                                .background(Color.jackAccent.opacity(0.15))
+                                .foregroundStyle(Color.jackAccent)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Button { backupSaves() } label: {
+                        Label("Backup", systemImage: "externaldrive.badge.plus")
+                            .font(.system(size: 11, weight: .medium))
+                            .frame(maxWidth: .infinity, minHeight: 28)
                             .background(Color.white.opacity(0.07))
-                            .foregroundStyle(.white.opacity(0.8))
+                            .foregroundStyle(.white.opacity(0.7))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                     .buttonStyle(.plain)
-                    .disabled(savesDirectory == nil)
+                    .disabled(saveDir == nil)
 
-                    Button {
-                        restoreSaves()
-                    } label: {
-                        Label("Ripristina", systemImage: "arrow.down.doc")
-                            .font(.system(size: 12, weight: .medium))
-                            .frame(maxWidth: .infinity, minHeight: 30)
+                    Button { restoreSaves() } label: {
+                        Label("Ripristina", systemImage: "externaldrive.badge.minus")
+                            .font(.system(size: 11, weight: .medium))
+                            .frame(maxWidth: .infinity, minHeight: 28)
                             .background(Color.white.opacity(0.07))
-                            .foregroundStyle(.white.opacity(0.8))
+                            .foregroundStyle(.white.opacity(0.7))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                     .buttonStyle(.plain)
                     .disabled(!hasBackup)
                 }
 
-                if let status = backupStatus {
-                    Text(status)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.45))
+                // Status messages
+                if let sync = cloudSyncStatus {
+                    Text(sync).font(.system(size: 11)).foregroundStyle(Color.jackSuccess)
                 }
+                if let backup = backupStatus {
+                    Text(backup).font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                }
+
+                if !steamInstalled && !goldbergEnabled {
+                    Text("Abilita Goldberg per usare save locali indipendenti da Steam.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.3))
+                }
+            }
+        }
+    }
+
+    private func manualSyncFromCloud() {
+        guard let exeURL = SteamCMDService.findGameExecutable(
+            in: SteamCMDService.gameInstallDir(appID: game.appid)
+        ) else {
+            cloudSyncStatus = "⚠ Gioco non installato"
+            return
+        }
+        let exeDir = exeURL.deletingLastPathComponent()
+        let syncID = steamUserID
+        let syncAppID = game.appid
+        Task {
+            do {
+                let result = try SteamCloudSyncService.shared.syncToLocal(
+                    appID: syncAppID, steamID: syncID, exeDir: exeDir
+                )
+                cloudSyncStatus = result.fileCount > 0
+                    ? "✓ Importati \(result.fileCount) file da Steam Mac"
+                    : "Nessun file trovato in Steam Mac"
+            } catch {
+                cloudSyncStatus = "⚠ \(error.localizedDescription)"
             }
         }
     }
@@ -945,7 +1003,7 @@ struct GameDetailPanel: View {
 
             let exeDir = exeURL.deletingLastPathComponent()
 
-            // --- Goldberg Steam Emulator ---
+            // --- Goldberg Steam Emulator (DRM bypass) ---
             if goldbergEnabled {
                 do {
                     try await GoldbergService.shared.ensureInstalled()
@@ -958,10 +1016,20 @@ struct GameDetailPanel: View {
                     launchError = "Goldberg: \(error.localizedDescription)"
                     return
                 }
+
+                // Strip SteamStub DRM from exe (Goldberg only replaces the API layer,
+                // SteamStub is a separate DRM wrapper on the exe itself)
+                do {
+                    try await SteamlessService.shared.stripIfNeeded(exe: exeURL)
+                } catch {
+                    launchError = "Steamless: \(error.localizedDescription)"
+                    return
+                }
             } else {
                 // Restore originals if Goldberg was previously active
                 GoldbergService.shared.remove(from: exeDir)
-                // Fallback: write plain steam_appid.txt for soft DRM
+                SteamlessService.shared.restore(exe: exeURL)
+                // Write steam_appid.txt for games with light DRM
                 try? "\(appID)\n".write(
                     to: exeDir.appending(path: "steam_appid.txt"),
                     atomically: true, encoding: .utf8
@@ -977,6 +1045,40 @@ struct GameDetailPanel: View {
                 } catch {
                     launchError = "Inizializzazione Wine fallita: \(error.localizedDescription)"
                     return
+                }
+            }
+
+            // --- Install _CommonRedist (vcredist, DirectX) on first launch ---
+            let redistMarker = installDir.appending(path: ".redist_installed")
+            if !FileManager.default.fileExists(atPath: redistMarker.path(percentEncoded: false)) {
+                let redistDir = installDir.appending(path: "_CommonRedist")
+                if FileManager.default.fileExists(atPath: redistDir.path(percentEncoded: false)) {
+                    // Collect vcredist exe paths synchronously, then run via Wine
+                    let vcredistDir = redistDir.appending(path: "vcredist")
+                    var vcExes: [URL] = []
+                    if let vcEnum = FileManager.default.enumerator(at: vcredistDir, includingPropertiesForKeys: nil) {
+                        while let file = vcEnum.nextObject() as? URL {
+                            if file.lastPathComponent.lowercased().hasSuffix(".exe") {
+                                vcExes.append(file)
+                            }
+                        }
+                    }
+                    for vcExe in vcExes {
+                        _ = try? await Wine.runWine(
+                            [vcExe.path(percentEncoded: false), "/q", "/norestart"],
+                            bottle: bottle
+                        )
+                    }
+                    // DirectX DXSETUP.exe (run silently)
+                    let dxSetup = redistDir.appending(path: "DirectX").appending(path: "Jun2010").appending(path: "DXSETUP.exe")
+                    if FileManager.default.fileExists(atPath: dxSetup.path(percentEncoded: false)) {
+                        _ = try? await Wine.runWine(
+                            [dxSetup.path(percentEncoded: false), "/silent"],
+                            bottle: bottle
+                        )
+                    }
+                    // Mark as done so we don't re-run every launch
+                    try? "".write(to: redistMarker, atomically: true, encoding: .utf8)
                 }
             }
 
@@ -1007,39 +1109,87 @@ struct GameDetailPanel: View {
                 ], bottle: bottle)
             }
 
+            // --- Steam Cloud sync: Mac Steam → Goldberg (before launch) ---
+            if goldbergEnabled && SteamCloudSyncService.shared.isSteamMacInstalled {
+                let syncID = steamUserID
+                let syncAppID = appID
+                do {
+                    let result = try SteamCloudSyncService.shared.syncToLocal(
+                        appID: syncAppID, steamID: syncID, exeDir: exeDir
+                    )
+                    if result.fileCount > 0 {
+                        cloudSyncStatus = "↓ Sync da Steam Mac: \(result.fileCount) file importati"
+                    }
+                } catch {
+                    cloudSyncStatus = "⚠ Sync fallito: \(error.localizedDescription)"
+                }
+            }
+
             // --- Auto-backup saves before launch ---
             if let saveDir = savesDirectory {
                 let dest = backupDir
                 Task.detached {
                     let fm = FileManager.default
                     try? fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    if fm.fileExists(atPath: dest.path(percentEncoded: false)) {
-                        try? fm.removeItem(at: dest)
-                    }
+                    if fm.fileExists(atPath: dest.path(percentEncoded: false)) { try? fm.removeItem(at: dest) }
                     try? fm.copyItem(at: saveDir, to: dest)
                 }
             }
 
+            // --- Goldberg: remove steam:// protocol handler to prevent game from relaunching via steam.exe ---
+            if goldbergEnabled {
+                _ = try? await Wine.runWine([
+                    "reg", "delete", "HKCU\\Software\\Classes\\steam", "/f"
+                ], bottle: bottle)
+                _ = try? await Wine.runWine([
+                    "reg", "delete", "HKCU\\Software\\Classes\\steamlink", "/f"
+                ], bottle: bottle)
+                // Remove TempAppCmdLine that points to steam.exe
+                _ = try? await Wine.runWine([
+                    "reg", "delete", "HKLM\\Software\\Valve\\Steam", "/v", "TempAppCmdLine", "/f"
+                ], bottle: bottle)
+                _ = try? await Wine.runWine([
+                    "reg", "delete", "HKLM\\Software\\Wow6432Node\\Valve\\Steam", "/v", "TempAppCmdLine", "/f"
+                ], bottle: bottle)
+            }
+
             // --- Launch ---
-            let start = Date()
+            let steamEnv: [String: String] = [
+                "SteamAppId": "\(appID)",
+                "SteamGameId": "\(appID)"
+            ]
+
             do {
                 for await _ in try Wine.runWineProcess(
                     args: [exeURL.path(percentEncoded: false)],
                     bottle: bottle,
-                    workingDirectory: exeDir
+                    workingDirectory: exeDir,
+                    environment: steamEnv
                 ) { }
             } catch {
                 launchError = "Errore avvio: \(error.localizedDescription)"
                 return
             }
 
-            // If the game exited in under 5 seconds it almost certainly hit a DRM check
-            let duration = Date().timeIntervalSince(start)
-            if duration < 5 {
-                launchError = "Il gioco si è chiuso subito (\(Int(duration))s). Probabile causa: DRM Steam. Alcuni giochi richiedono Steam in esecuzione."
+            // --- Steam Cloud sync: Goldberg → Mac Steam (after exit) ---
+            if goldbergEnabled && SteamCloudSyncService.shared.isSteamMacInstalled {
+                let syncID = steamUserID
+                let syncAppID = appID
+                let syncDir = exeDir
+                Task.detached {
+                    let result = try? SteamCloudSyncService.shared.syncToCloud(
+                        appID: syncAppID, steamID: syncID, exeDir: syncDir
+                    )
+                    if let count = result?.fileCount, count > 0 {
+                        await MainActor.run {
+                            self.cloudSyncStatus = "↑ Sync verso Steam Mac: \(count) file salvati"
+                        }
+                    }
+                }
             }
         }
     }
+
 }
 
 struct MetadataLabel: View {

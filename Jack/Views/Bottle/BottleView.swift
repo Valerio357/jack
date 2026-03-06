@@ -27,13 +27,13 @@ enum BottleStage {
 struct BottleView: View {
     @ObservedObject var bottle: Bottle
     @State private var path = NavigationPath()
-    @AppStorage("steamUserID") private var steamUserID = ""
+    @AppStorage("steamUsername") private var steamUsername = ""
 
     var body: some View {
         NavigationStack(path: $path) {
             Form {
                 Section("Programs") {
-                    if steamUserID.isEmpty {
+                    if steamUsername.isEmpty {
                         SteamLoginView()
                     } else {
                         SteamLibraryView(bottle: bottle)

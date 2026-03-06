@@ -18,16 +18,14 @@
 
 import SwiftUI
 import JackKit
-import CoreImage.CIFilterBuiltins
 
 struct OnboardingView: View {
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("steamUserID") private var steamUserID = ""
-    @AppStorage("steamAPIKey") private var steamAPIKey = ""
     @AppStorage("steamUsername") private var steamUsername = ""
     @State private var currentStep = 0
 
-    private let totalSteps = 5
+    private let totalSteps = 3
 
     var body: some View {
         ZStack {
@@ -38,29 +36,21 @@ struct OnboardingView: View {
                     .opacity(currentStep == 0 ? 1 : 0)
                     .offset(x: currentStep == 0 ? 0 : (currentStep > 0 ? -40 : 40))
 
-                ConnectSteamStep(onNext: { advance() })
+                SteamLoginStep(onNext: { advance() })
                     .opacity(currentStep == 1 ? 1 : 0)
                     .offset(x: currentStep == 1 ? 0 : (currentStep > 1 ? -40 : 40))
 
-                APIKeyStep(onNext: { advance() })
-                    .opacity(currentStep == 2 ? 1 : 0)
-                    .offset(x: currentStep == 2 ? 0 : (currentStep > 2 ? -40 : 40))
-
-                SteamCredentialsStep(onNext: { advance() })
-                    .opacity(currentStep == 3 ? 1 : 0)
-                    .offset(x: currentStep == 3 ? 0 : (currentStep > 3 ? -40 : 40))
-
                 ReadyStep(onFinish: {
-                    Task {
+                    hasCompletedOnboarding = true
+                    // Initialize Wine prefix in background — don't block onboarding
+                    Task.detached(priority: .background) {
                         if let bottle = try? await BottleVM.shared.createSharedSteamBottle() {
-                            // Initialize Wine prefix now so games launch without delay later
                             _ = try? await Wine.runWine(["wineboot", "-u"], bottle: bottle)
                         }
-                        hasCompletedOnboarding = true
                     }
                 })
-                    .opacity(currentStep == 4 ? 1 : 0)
-                    .offset(x: currentStep == 4 ? 0 : 40)
+                    .opacity(currentStep == 2 ? 1 : 0)
+                    .offset(x: currentStep == 2 ? 0 : 40)
             }
             .animation(.easeInOut(duration: 0.35), value: currentStep)
 
@@ -131,16 +121,19 @@ private struct WelcomeStep: View {
     }
 }
 
-// MARK: - Step 2: Connect Steam
+// MARK: - Step 2: Steam Login (username + password via SteamCMD)
 
-private struct ConnectSteamStep: View {
+private struct SteamLoginStep: View {
     let onNext: () -> Void
 
     @AppStorage("steamUserID") private var steamUserID = ""
-    @State private var isLoggingIn = false
-    @State private var manualID = ""
+    @AppStorage("steamUsername") private var steamUsername = ""
+    @State private var username = ""
+    @State private var password = ""
+    @State private var guardCode = ""
+    @State private var isTesting = false
     @State private var errorMessage: String?
-    @State private var showQR = false
+    @State private var loginSuccess = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -151,294 +144,10 @@ private struct ConnectSteamStep: View {
                 .foregroundStyle(Color.jackAccent)
 
             VStack(spacing: 8) {
-                Text("Connetti Steam")
+                Text("Accedi a Steam")
                     .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(.white)
-                Text("Accedi per caricare la tua libreria.")
-                    .font(.jackBody)
-                    .foregroundStyle(.white.opacity(0.6))
-            }
-
-            HStack(spacing: 10) {
-                Button {
-                    loginWithSteam()
-                } label: {
-                    HStack(spacing: 6) {
-                        if isLoggingIn {
-                            ProgressView().controlSize(.small).tint(.white)
-                        } else {
-                            Image(systemName: "person.badge.key.fill")
-                        }
-                        Text(isLoggingIn ? "Apertura…" : "Browser")
-                            .fontWeight(.semibold)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .background(Color.jackAccent)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-                .disabled(isLoggingIn)
-
-                Button {
-                    showQR = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "qrcode.viewfinder")
-                        Text("QR Code")
-                            .fontWeight(.semibold)
-                    }
-                    .frame(minWidth: 110, minHeight: 44)
-                    .background(Color.white.opacity(0.12))
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-            }
-            .sheet(isPresented: $showQR) {
-                QRLoginSheet { id in
-                    steamUserID = id
-                    onNext()
-                }
-            }
-
-            HStack {
-                Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
-                Text("oppure")
-                    .font(.jackCaption)
-                    .foregroundStyle(.white.opacity(0.3))
-                    .fixedSize()
-                Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
-            }
-
-            HStack(spacing: 8) {
-                TextField("Steam ID (es. 76561198...)", text: $manualID)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color.jackCard)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .foregroundStyle(.white)
-                    .tint(Color.jackAccent)
-
-                Button("Usa") {
-                    if !manualID.isEmpty {
-                        steamUserID = manualID
-                        onNext()
-                    }
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color.white.opacity(0.1))
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .disabled(manualID.isEmpty)
-            }
-
-            if let err = errorMessage {
-                Text(err)
-                    .font(.jackCaption)
-                    .foregroundStyle(Color.jackError)
-            }
-
-            Spacer()
-
-            if !steamUserID.isEmpty {
-                OnboardingButton(label: "Continua", isPrimary: true, action: onNext)
-            }
-        }
-        .padding(40)
-    }
-
-    private func loginWithSteam() {
-        isLoggingIn = true
-        errorMessage = nil
-        Task {
-            defer { isLoggingIn = false }
-            do {
-                steamUserID = try await SteamAuthService.shared.login()
-                onNext()
-            } catch SteamAuthError.cancelled {
-                // nothing
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-}
-
-// MARK: - QR Code Login View
-
-struct QRLoginSheet: View {
-    let onSuccess: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var qrImage: NSImage?
-    @State private var statusText = "Generazione QR…"
-    @State private var loginTask: Task<Void, Never>?
-
-    var body: some View {
-        VStack(spacing: 20) {
-            Text("Accedi con Steam Mobile")
-                .font(.system(size: 18, weight: .bold))
-                .foregroundStyle(.white)
-
-            if let img = qrImage {
-                Image(nsImage: img)
-                    .interpolation(.none)
-                    .resizable()
-                    .frame(width: 200, height: 200)
-                    .cornerRadius(12)
-                    .padding(8)
-                    .background(Color.white)
-                    .cornerRadius(16)
-            } else {
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.white.opacity(0.1))
-                    .frame(width: 216, height: 216)
-                    .overlay(ProgressView().tint(Color.jackAccent))
-            }
-
-            Text(statusText)
-                .font(.jackCaption)
-                .foregroundStyle(.white.opacity(0.6))
-                .multilineTextAlignment(.center)
-
-            Text("1. Apri Steam sul tuo telefono\n2. Tocca l'icona QR nella schermata di login\n3. Scansiona questo codice")
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.4))
-                .multilineTextAlignment(.center)
-
-            Button("Annulla") { loginTask?.cancel(); dismiss() }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white.opacity(0.5))
-                .font(.jackCaption)
-        }
-        .padding(32)
-        .frame(width: 320)
-        .background(Color.jackBackground)
-        .task {
-            loginTask = Task {
-                do {
-                    let steamID = try await SteamQRAuthService.shared.login { url in
-                        Task { @MainActor in
-                            statusText = "In attesa di conferma…"
-                            qrImage = Self.makeQR(url)
-                        }
-                    }
-                    onSuccess(steamID)
-                    dismiss()
-                } catch {
-                    statusText = error.localizedDescription
-                }
-            }
-        }
-    }
-
-    private static func makeQR(_ string: String) -> NSImage? {
-        guard let data = string.data(using: .utf8) else { return nil }
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = data
-        filter.correctionLevel = "M"
-        guard let ci = filter.outputImage else { return nil }
-        let scale = 200.0 / ci.extent.width
-        let scaled = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let rep = NSCIImageRep(ciImage: scaled)
-        let img = NSImage(size: rep.size)
-        img.addRepresentation(rep)
-        return img
-    }
-}
-
-// MARK: - Step 3: API Key
-
-private struct APIKeyStep: View {
-    let onNext: () -> Void
-
-    @AppStorage("steamAPIKey") private var steamAPIKey = ""
-    @State private var manualKey = ""
-    @Environment(\.openURL) var openURL
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-
-            Image(systemName: "key.fill")
-                .font(.system(size: 52))
-                .foregroundStyle(Color.jackAccent)
-
-            VStack(spacing: 8) {
-                Text("Steam API Key")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(.white)
-                Text("Necessaria per scaricare la lista dei tuoi giochi.")
-                    .font(.jackBody)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .multilineTextAlignment(.center)
-            }
-
-            VStack(spacing: 12) {
-                SecureField("Incolla qui la tua API Key", text: $manualKey)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color.jackCard)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .foregroundStyle(.white)
-                    .tint(Color.jackAccent)
-
-                Button("Come ottengo una API Key?") {
-                    if let url = URL(string: "https://steamcommunity.com/dev/apikey") {
-                        openURL(url)
-                    }
-                }
-                .font(.jackCaption)
-                .foregroundStyle(Color.jackAccent)
-                .buttonStyle(.plain)
-            }
-
-            Spacer()
-
-            OnboardingButton(label: "Continua", isPrimary: true) {
-                if !manualKey.isEmpty {
-                    steamAPIKey = manualKey
-                    onNext()
-                }
-            }
-            .disabled(manualKey.isEmpty)
-        }
-        .padding(40)
-        .onAppear {
-            manualKey = steamAPIKey
-        }
-    }
-}
-
-// MARK: - Step 4: Steam Credentials (for SteamCMD)
-
-private struct SteamCredentialsStep: View {
-    let onNext: () -> Void
-
-    @AppStorage("steamUsername") private var steamUsername = ""
-    @State private var username = ""
-    @State private var password = ""
-    @State private var isTesting = false
-    @State private var errorMessage: String?
-    @State private var loginSuccess = false
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-
-            Image(systemName: "terminal.fill")
-                .font(.system(size: 52))
-                .foregroundStyle(Color.jackAccent)
-
-            VStack(spacing: 8) {
-                Text("Credenziali Steam")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(.white)
-                Text("Per scaricare i giochi, Jack usa SteamCMD.\nInserisci le tue credenziali Steam.")
+                Text("Inserisci le tue credenziali Steam.\nJack le usa per scaricare i tuoi giochi.")
                     .font(.jackBody)
                     .foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center)
@@ -464,12 +173,27 @@ private struct SteamCredentialsStep: View {
                     .foregroundStyle(.white)
                     .tint(Color.jackAccent)
                     .textContentType(.password)
+
+                TextField("Codice Steam Guard (5 caratteri)", text: $guardCode)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.jackCard)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .foregroundStyle(.white)
+                    .tint(Color.jackAccent)
+                    .textContentType(.oneTimeCode)
             }
+
+            Text("Apri Steam Mobile → Steam Guard → copia il codice a 5 caratteri.")
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.4))
+                .multilineTextAlignment(.center)
 
             if isTesting {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small).tint(Color.jackAccent)
-                    Text("Configurazione SteamCMD...")
+                    Text("Login in corso...")
                         .font(.jackCaption)
                         .foregroundStyle(.white.opacity(0.6))
                 }
@@ -488,11 +212,6 @@ private struct SteamCredentialsStep: View {
                     .font(.jackCaption)
             }
 
-            Text("La password viene inviata solo a SteamCMD e non viene salvata da Jack.")
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.3))
-                .multilineTextAlignment(.center)
-
             Spacer()
 
             HStack(spacing: 12) {
@@ -503,10 +222,10 @@ private struct SteamCredentialsStep: View {
                     onNext()
                 }
 
-                OnboardingButton(label: "Testa e Continua", isPrimary: true) {
-                    testAndContinue()
+                OnboardingButton(label: "Accedi", isPrimary: true) {
+                    doLogin()
                 }
-                .disabled(username.isEmpty || password.isEmpty || isTesting)
+                .disabled(username.isEmpty || password.isEmpty || guardCode.isEmpty || isTesting)
             }
         }
         .padding(40)
@@ -515,7 +234,7 @@ private struct SteamCredentialsStep: View {
         }
     }
 
-    private func testAndContinue() {
+    private func doLogin() {
         isTesting = true
         errorMessage = nil
         loginSuccess = false
@@ -523,8 +242,15 @@ private struct SteamCredentialsStep: View {
         Task {
             do {
                 try await SteamCMDService.shared.ensureInstalled()
-                try await SteamCMDService.shared.login(username: username, password: password)
+                let result = try await SteamCMDService.shared.login(
+                    username: username,
+                    password: password,
+                    steamGuardCode: guardCode
+                )
                 steamUsername = username
+                if !result.steamID64.isEmpty {
+                    steamUserID = result.steamID64
+                }
                 loginSuccess = true
                 try? await Task.sleep(for: .seconds(1))
                 onNext()
@@ -536,7 +262,7 @@ private struct SteamCredentialsStep: View {
     }
 }
 
-// MARK: - Step 5: Ready
+// MARK: - Step 3: Ready
 
 private struct ReadyStep: View {
     let onFinish: () -> Void

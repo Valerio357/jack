@@ -25,12 +25,11 @@ struct SettingsView: View {
     @AppStorage("checkJackWineUpdates") var checkJackWineUpdates = true
     @AppStorage("defaultBottleLocation") var defaultBottleLocation = BottleData.defaultBottleDir
     @AppStorage("steamUserID") var steamUserID = ""
-    @AppStorage("steamAPIKey") var steamAPIKey = ""
     @AppStorage("steamUsername") var steamUsername = ""
-    @Environment(\.openURL) var openURL
     @Environment(\.dismiss) var dismiss
 
     @State private var steamPassword = ""
+    @State private var steamGuardCode = ""
     @State private var loginStatus: LoginTestStatus = .idle
     @State private var steamCMDInstalled = SteamCMDService.shared.isInstalled
     @State private var isInstallingCMD = false
@@ -75,22 +74,53 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         LabeledContent("Steam ID", value: steamUserID)
+                    }
+
+                    TextField("Username Steam", text: $steamUsername)
+                        .textContentType(.username)
+
+                    SecureField("Password", text: $steamPassword)
+                        .textContentType(.password)
+
+                    TextField("Codice Steam Guard (5 caratteri)", text: $steamGuardCode)
+                        .textContentType(.oneTimeCode)
+
+                    HStack {
+                        Button(steamUsername.isEmpty ? "Accedi" : "Testa Login") {
+                            testLogin()
+                        }
+                        .disabled(steamUsername.isEmpty || steamPassword.isEmpty || steamGuardCode.isEmpty || loginStatus == .testing)
+
+                        Spacer()
+
+                        switch loginStatus {
+                        case .idle:
+                            EmptyView()
+                        case .testing:
+                            ProgressView().controlSize(.small)
+                        case .success:
+                            Label("OK", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(Color.jackSuccess)
+                                .font(.caption)
+                        case .failed(let msg):
+                            Text(msg)
+                                .foregroundStyle(.red)
+                                .font(.caption)
+                                .lineLimit(3)
+                        }
+                    }
+
+                    if !steamUserID.isEmpty {
                         Button("Scollega account") {
                             steamUserID = ""
-                            steamAPIKey = ""
                             steamUsername = ""
                         }
                         .foregroundStyle(.red)
                     }
-                    SecureField("API Key", text: $steamAPIKey)
-                        .textContentType(.password)
-                    Button("Ottieni API Key…") {
-                        if let url = URL(string: "https://steamcommunity.com/dev/apikey") {
-                            openURL(url)
-                        }
-                    }
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
+
+                    Text("SteamCMD scarica i giochi e carica la libreria. Dopo il primo login le credenziali vengono salvate automaticamente.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Section("SteamCMD") {
                     HStack {
@@ -113,41 +143,6 @@ struct SettingsView: View {
                             .buttonStyle(.bordered)
                         }
                     }
-
-                    TextField("Username Steam", text: $steamUsername)
-                        .textContentType(.username)
-
-                    SecureField("Password (solo per primo login)", text: $steamPassword)
-                        .textContentType(.password)
-
-                    HStack {
-                        Button("Testa Login") {
-                            testLogin()
-                        }
-                        .disabled(steamUsername.isEmpty || loginStatus == .testing)
-
-                        Spacer()
-
-                        switch loginStatus {
-                        case .idle:
-                            EmptyView()
-                        case .testing:
-                            ProgressView().controlSize(.small)
-                        case .success:
-                            Label("OK", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(Color.jackSuccess)
-                                .font(.caption)
-                        case .failed(let msg):
-                            Text(msg)
-                                .foregroundStyle(.red)
-                                .font(.caption)
-                                .lineLimit(2)
-                        }
-                    }
-
-                    Text("SteamCMD scarica i giochi Windows senza bisogno di Steam per Windows. Dopo il primo login le credenziali vengono salvate automaticamente.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -160,7 +155,7 @@ struct SettingsView: View {
                 }
             }
         }
-        .frame(width: 450, height: 600)
+        .frame(width: 450, height: 550)
     }
 
     private func installSteamCMD() {
@@ -179,15 +174,24 @@ struct SettingsView: View {
     private func testLogin() {
         loginStatus = .testing
         let username = steamUsername
-        let password = steamPassword.isEmpty ? nil : steamPassword
+        let password = steamPassword
+        let code = steamGuardCode
 
         Task {
             do {
                 try await SteamCMDService.shared.ensureInstalled()
                 steamCMDInstalled = true
-                try await SteamCMDService.shared.login(username: username, password: password)
+                let result = try await SteamCMDService.shared.login(
+                    username: username,
+                    password: password,
+                    steamGuardCode: code
+                )
+                if !result.steamID64.isEmpty {
+                    steamUserID = result.steamID64
+                }
                 loginStatus = .success
                 steamPassword = ""
+                steamGuardCode = ""
             } catch {
                 loginStatus = .failed(error.localizedDescription)
             }
