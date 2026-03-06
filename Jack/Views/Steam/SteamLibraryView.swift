@@ -630,9 +630,9 @@ struct GameDetailPanel: View {
 
     private var savesCard: some View {
         let cloudCount = SteamCloudSyncService.shared.cloudSaveFileCount(
-            appID: game.appid, steamID: steamUserID
+            appID: game.appid, steamID: steamUserID, bottle: bottle
         )
-        let steamInstalled = SteamCloudSyncService.shared.isSteamMacInstalled
+        let steamInstalled = SteamCloudSyncService.shared.isSteamInstalled(in: bottle)
 
         return DetailCard {
             VStack(alignment: .leading, spacing: 12) {
@@ -641,14 +641,14 @@ struct GameDetailPanel: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white.opacity(0.35))
                     Spacer()
-                    // Steam Mac indicator
+                    // Steam Cloud indicator
                     if steamInstalled {
-                        Label(cloudCount > 0 ? "\(cloudCount) files on Steam Mac" : "Steam Mac",
+                        Label(cloudCount > 0 ? "\(cloudCount) cloud saves" : "Steam Cloud",
                               systemImage: "checkmark.icloud")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(cloudCount > 0 ? Color.jackSuccess : .white.opacity(0.3))
                     } else {
-                        Label("Steam Mac not found", systemImage: "xmark.icloud")
+                        Label("Steam not installed in Wine", systemImage: "xmark.icloud")
                             .font(.system(size: 10))
                             .foregroundStyle(.white.opacity(0.25))
                     }
@@ -677,11 +677,11 @@ struct GameDetailPanel: View {
 
                 // Sync buttons
                 HStack(spacing: 8) {
-                    if steamInstalled && cloudCount > 0 {
+                    if steamInstalled {
                         Button {
                             manualSyncFromCloud()
                         } label: {
-                            Label("↓ From Steam", systemImage: "icloud.and.arrow.down")
+                            Label("↓ From Cloud", systemImage: "icloud.and.arrow.down")
                                 .font(.system(size: 11, weight: .medium))
                                 .frame(maxWidth: .infinity, minHeight: 28)
                                 .background(Color.jackAccent.opacity(0.15))
@@ -722,8 +722,8 @@ struct GameDetailPanel: View {
                     Text(backup).font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                 }
 
-                if !steamInstalled && !goldbergEnabled {
-                    Text("Enable Goldberg to use local saves independent from Steam.")
+                if !steamInstalled {
+                    Text("Install Steam in Wine to enable cloud save sync.")
                         .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.3))
                 }
@@ -732,25 +732,22 @@ struct GameDetailPanel: View {
     }
 
     private func manualSyncFromCloud() {
-        guard let exeURL = SteamCMDService.findGameExecutable(
-            in: SteamCMDService.gameInstallDir(appID: game.appid)
-        ) else {
-            cloudSyncStatus = "⚠ Game not installed"
-            return
-        }
-        let exeDir = exeURL.deletingLastPathComponent()
         let syncID = steamUserID
         let syncAppID = game.appid
+        let syncBottle = bottle
+        cloudSyncStatus = "Syncing from Steam Cloud..."
         Task {
             do {
-                let result = try SteamCloudSyncService.shared.syncToLocal(
-                    appID: syncAppID, steamID: syncID, exeDir: exeDir
-                )
+                let result = try await SteamCloudSyncService.shared.syncFromCloud(
+                    appID: syncAppID, steamID: syncID, bottle: syncBottle
+                ) { status in
+                    Task { @MainActor in cloudSyncStatus = status }
+                }
                 cloudSyncStatus = result.fileCount > 0
-                    ? "✓ Imported \(result.fileCount) files from Steam Mac"
-                    : "No files found in Steam Mac"
+                    ? "Imported \(result.fileCount) files from Steam Cloud"
+                    : "No cloud saves found"
             } catch {
-                cloudSyncStatus = "⚠ \(error.localizedDescription)"
+                cloudSyncStatus = "Sync failed: \(error.localizedDescription)"
             }
         }
     }
@@ -758,29 +755,16 @@ struct GameDetailPanel: View {
     // Find save directory: userdata inside bottle (Steam standard) or Goldberg local
     private var savesDirectory: URL? {
         // 1. Goldberg local saves (if active)
-        let gameDir = SteamCMDService.gameInstallDir(appID: game.appid)
-        if let exeURL = SteamCMDService.findGameExecutable(in: gameDir) {
-            let goldbergSaves = exeURL.deletingLastPathComponent()
-                .appending(path: "steam_settings")
-                .appending(path: "USERDATA")
-            if FileManager.default.fileExists(atPath: goldbergSaves.path(percentEncoded: false)) {
-                return goldbergSaves
-            }
+        // 1. gbe_fork saves (GSE Saves/<appID>/remote/)
+        let gbePath = SteamCloudSyncService.shared.gbeSavePath(bottle: bottle, appID: game.appid)
+        if FileManager.default.fileExists(atPath: gbePath.path(percentEncoded: false)) {
+            return gbePath
         }
-        // 2. Standard Steam userdata in Wine bottle
-        if !steamUserID.isEmpty, let id64 = Int64(steamUserID) {
-            let steamID3 = id64 - 76561197960265728
-            let udPath = bottle.url
-                .appending(path: "drive_c")
-                .appending(path: "Program Files (x86)")
-                .appending(path: "Steam")
-                .appending(path: "userdata")
-                .appending(path: "\(steamID3)")
-                .appending(path: "\(game.appid)")
-                .appending(path: "remote")
-            if FileManager.default.fileExists(atPath: udPath.path(percentEncoded: false)) {
-                return udPath
-            }
+        // 2. Wine Steam userdata (cloud-synced saves)
+        if let cloudPath = SteamCloudSyncService.shared.wineUserDataRemote(
+            bottle: bottle, appID: game.appid, steamID: steamUserID
+        ), FileManager.default.fileExists(atPath: cloudPath.path(percentEncoded: false)) {
+            return cloudPath
         }
         return nil
     }
@@ -1149,19 +1133,16 @@ struct GameDetailPanel: View {
                 ], bottle: bottle)
             }
 
-            // --- Steam Cloud sync: Mac Steam → Goldberg (before launch) ---
-            if goldbergEnabled && SteamCloudSyncService.shared.isSteamMacInstalled {
+            // --- Steam Cloud sync: copy existing cloud saves to gbe_fork (fast, no Steam startup) ---
+            if goldbergEnabled {
                 let syncID = steamUserID
                 let syncAppID = appID
-                do {
-                    let result = try SteamCloudSyncService.shared.syncToLocal(
-                        appID: syncAppID, steamID: syncID, exeDir: exeDir
-                    )
-                    if result.fileCount > 0 {
-                        cloudSyncStatus = "↓ Synced from Steam Mac: \(result.fileCount) files imported"
-                    }
-                } catch {
-                    cloudSyncStatus = "⚠ Sync failed: \(error.localizedDescription)"
+                let syncBottle = bottle
+                let count = SteamCloudSyncService.shared.copyCloudToLocal(
+                    appID: syncAppID, steamID: syncID, bottle: syncBottle
+                )
+                if count > 0 {
+                    cloudSyncStatus = "Cloud: \(count) saves loaded"
                 }
             }
 
@@ -1214,18 +1195,20 @@ struct GameDetailPanel: View {
                 return
             }
 
-            // --- Steam Cloud sync: Goldberg → Mac Steam (after exit) ---
-            if goldbergEnabled && SteamCloudSyncService.shared.isSteamMacInstalled {
+            // --- Steam Cloud sync: copy saves back and upload in background ---
+            if goldbergEnabled && SteamCloudSyncService.shared.isSteamInstalled(in: bottle) {
                 let syncID = steamUserID
                 let syncAppID = appID
-                let syncDir = exeDir
+                let syncBottle = bottle
                 Task.detached {
-                    let result = try? SteamCloudSyncService.shared.syncToCloud(
-                        appID: syncAppID, steamID: syncID, exeDir: syncDir
+                    let count = SteamCloudSyncService.shared.copyLocalToCloud(
+                        appID: syncAppID, steamID: syncID, bottle: syncBottle
                     )
-                    if let count = result?.fileCount, count > 0 {
+                    if count > 0 {
+                        // Upload in background — start Steam briefly
+                        try? await SteamCloudSyncService.shared.uploadToCloud(bottle: syncBottle)
                         await MainActor.run {
-                            self.cloudSyncStatus = "↑ Synced to Steam Mac: \(count) files saved"
+                            self.cloudSyncStatus = "Cloud: \(count) saves uploaded"
                         }
                     }
                 }
