@@ -238,7 +238,14 @@ public class Wine {
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
         guard !environment.isEmpty else { return result }
-        result.merge(environment, uniquingKeysWith: { $1 })
+        // Merge WINEDLLOVERRIDES by concatenating with ";" so DXVK + Steam overrides coexist
+        if let existing = result["WINEDLLOVERRIDES"], let extra = environment["WINEDLLOVERRIDES"] {
+            result["WINEDLLOVERRIDES"] = "\(existing);\(extra)"
+        }
+        result.merge(environment.filter { $0.key != "WINEDLLOVERRIDES" }, uniquingKeysWith: { $1 })
+        if result["WINEDLLOVERRIDES"] == nil, let overrides = environment["WINEDLLOVERRIDES"] {
+            result["WINEDLLOVERRIDES"] = overrides
+        }
         return result
     }
 
@@ -364,6 +371,10 @@ public class Wine {
         // Do NOT call prepareSteamForDaemon() here — that replaces steamwebhelper
         // with a sleeping stub which kills all UI rendering.
         restoreSteamWebHelper()
+
+        // Remove steam.cfg — BootStrapperInhibitAll blocks the login/update flow
+        let steamCfg = BottleData.steamDir.appending(path: "steam.cfg")
+        try? FileManager.default.removeItem(at: steamCfg)
 
         var env = constructWineEnvironment(for: bottle)
         env["LANG"] = "en_US.UTF-8"

@@ -4,7 +4,8 @@
 //
 //  Replaces steam_api.dll / steam_api64.dll with the Goldberg Steam Emulator
 //  so games can run without a Steam client (Steamworks DRM bypass for owned games).
-//  Project: https://github.com/Detanup01/gbe_fork
+//  Uses Mr_Goldberg's original emulator (graceful handling of missing interfaces).
+//  Project: https://gitlab.com/Mr_Goldberg/goldberg_emulator
 //
 
 import Foundation
@@ -29,14 +30,14 @@ public final class GoldbergService: @unchecked Sendable {
     public static let shared = GoldbergService()
 
     private let goldbergDir = BottleData.steamCMDDir.appending(path: "Goldberg")
-    // gbe_fork (maintained Goldberg fork) — experimental build for maximum API coverage
-    private static let downloadURL = "https://github.com/Detanup01/gbe_fork/releases/download/release-2026_02_19/emu-win-release.7z"
+    // Original Mr_Goldberg emulator — handles missing interfaces gracefully (no popups)
+    private static let downloadURL = "https://gitlab.com/Mr_Goldberg/goldberg_emulator/-/jobs/4247811310/artifacts/download"
 
     private var dll32: URL { goldbergDir.appending(path: "steam_api.dll") }
     private var dll64: URL { goldbergDir.appending(path: "steam_api64.dll") }
 
     /// Version marker — bump when changing download URL to force re-download.
-    private static let currentVersion = "gbe_fork_2026_02_19"
+    private static let currentVersion = "goldberg_og_0.2.5"
     private var versionFile: URL { goldbergDir.appending(path: ".gbe_version") }
 
     public var isInstalled: Bool {
@@ -44,7 +45,6 @@ public final class GoldbergService: @unchecked Sendable {
         let hasDLL = fm.fileExists(atPath: dll32.path(percentEncoded: false))
             || fm.fileExists(atPath: dll64.path(percentEncoded: false))
         guard hasDLL else { return false }
-        // Check version marker to detect stale installs
         let version = (try? String(contentsOf: versionFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
         return version == Self.currentVersion
     }
@@ -57,7 +57,6 @@ public final class GoldbergService: @unchecked Sendable {
         if isInstalled { return }
 
         let fm = FileManager.default
-        // Clean old install (version mismatch or missing)
         try? fm.removeItem(at: goldbergDir)
         try fm.createDirectory(at: goldbergDir, withIntermediateDirectories: true)
 
@@ -68,46 +67,42 @@ public final class GoldbergService: @unchecked Sendable {
             throw GoldbergError.downloadFailed
         }
 
-        // Extract with bsdtar (supports 7z natively on macOS)
+        // Extract zip (original Goldberg uses zip, not 7z)
         let extractDir = goldbergDir.appending(path: "tmp_extract")
         try? fm.removeItem(at: extractDir)
         try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
 
         let extract = Process()
-        extract.executableURL = URL(fileURLWithPath: "/usr/bin/bsdtar")
-        extract.arguments = ["-xf", tempFile.path(percentEncoded: false),
-                             "-C", extractDir.path(percentEncoded: false)]
+        extract.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        extract.arguments = ["-qo", tempFile.path(percentEncoded: false),
+                             "-d", extractDir.path(percentEncoded: false)]
         try extract.run()
         extract.waitUntilExit()
         try? fm.removeItem(at: tempFile)
 
         guard extract.terminationStatus == 0 else { throw GoldbergError.extractionFailed }
 
-        // gbe_fork structure: release/experimental/x64/ and release/experimental/x32/
-        // Also copy steamclient from release/steamclient_experimental/
+        // Original Goldberg structure: root has steam_api.dll + steam_api64.dll
+        // experimental/ has steamclient.dll + steamclient64.dll
         let found = Self.copyDLLs(from: extractDir, to: goldbergDir)
         try? fm.removeItem(at: extractDir)
         guard found else { throw GoldbergError.dllNotFound }
 
-        // Write version marker
         try Self.currentVersion.write(to: versionFile, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Private helpers
 
-    /// Copy DLLs from gbe_fork extracted archive.
-    /// Uses experimental build for maximum API coverage.
-    /// Structure: release/experimental/x64/steam_api64.dll, release/experimental/x32/steam_api.dll
-    /// steamclient: release/steamclient_experimental/steamclient*.dll
+    /// Copy DLLs from original Goldberg extracted archive.
     private static func copyDLLs(from extractDir: URL, to destDir: URL) -> Bool {
         let fm = FileManager.default
         var found = false
 
-        // Map: source relative path prefix -> DLL files to copy
+        // Original Goldberg: steam_api*.dll in root, steamclient*.dll in experimental/
         let sources: [(dir: String, files: [String])] = [
-            ("release/experimental/x64", ["steam_api64.dll", "steamclient64.dll"]),
-            ("release/experimental/x32", ["steam_api.dll", "steamclient.dll"]),
-            ("release/steamclient_experimental", ["steamclient.dll", "steamclient64.dll"]),
+            (".", ["steam_api.dll", "steam_api64.dll"]),
+            ("experimental", ["steamclient.dll", "steamclient64.dll",
+                              "steam_api.dll", "steam_api64.dll"]),
         ]
 
         for source in sources {
@@ -129,13 +124,13 @@ public final class GoldbergService: @unchecked Sendable {
     /// Replace steam_api*.dll in the game directory with Goldberg DLLs.
     /// Searches the entire game directory tree (UE4 games often place DLLs
     /// in subdirectories like Engine/Binaries/ThirdParty/).
-    /// Creates `steam_settings/` with minimal config next to each replaced DLL.
+    /// Creates `steam_settings/` with config next to each replaced DLL.
     public func apply(to exeDir: URL, gameDir: URL? = nil, appID: Int, username: String, steamID: String) throws {
         let fm = FileManager.default
         let searchRoot = gameDir ?? exeDir
 
         // Find all steam_api*.dll locations in the game directory tree
-        var dllLocations = Set<URL>() // directories containing steam_api DLLs
+        var dllLocations = Set<URL>()
         if let enumerator = fm.enumerator(at: searchRoot, includingPropertiesForKeys: [.isRegularFileKey]) {
             for case let fileURL as URL in enumerator {
                 let name = fileURL.lastPathComponent.lowercased()
@@ -144,58 +139,50 @@ public final class GoldbergService: @unchecked Sendable {
                 }
             }
         }
-        // Always include the exe directory itself
         dllLocations.insert(exeDir)
 
         for dir in dllLocations {
-            // steam_settings folder next to the DLLs (gbe_fork ini format)
+            // steam_settings folder (original Goldberg format: plain text files)
             let settingsDir = dir.appending(path: "steam_settings")
             try fm.createDirectory(at: settingsDir, withIntermediateDirectories: true)
 
-            // App ID (still plain text in gbe_fork)
-            try "\(appID)\n".write(to: settingsDir.appending(path: "steam_appid.txt"),
-                                   atomically: true, encoding: .utf8)
-
-            // User config (gbe_fork ini format)
-            var userIni = "[user::general]\n"
-            userIni += "account_name=\(username)\n"
-            if !steamID.isEmpty {
-                userIni += "account_steamid=\(steamID)\n"
-            }
-            userIni += "language=english\n"
-            try userIni.write(to: settingsDir.appending(path: "configs.user.ini"),
-                              atomically: true, encoding: .utf8)
-
-            // Main config: disable overlay (crashes under Wine)
-            var mainIni = "[main::general]\n"
-            mainIni += "new_app_ticket=1\n"
-            mainIni += "gc_token=1\n"
-            try mainIni.write(to: settingsDir.appending(path: "configs.main.ini"),
-                              atomically: true, encoding: .utf8)
-
-            // Overlay config: disable it
-            let overlayIni = "[overlay::general]\nenable_experimental_overlay=0\n"
-            try overlayIni.write(to: settingsDir.appending(path: "configs.overlay.ini"),
+            // steam_appid.txt (also in steam_settings and beside the DLL)
+            try "\(appID)".write(to: settingsDir.appending(path: "steam_appid.txt"),
                                  atomically: true, encoding: .utf8)
 
-            // Unlock all DLCs by default
-            let appIni = "[app::dlcs]\nunlock_all=1\n"
-            try appIni.write(to: settingsDir.appending(path: "configs.app.ini"),
-                             atomically: true, encoding: .utf8)
+            // force_account_name.txt
+            if !username.isEmpty {
+                try username.write(to: settingsDir.appending(path: "force_account_name.txt"),
+                                   atomically: true, encoding: .utf8)
+            }
 
-            // Replace steam_api DLLs (backup originals)
+            // force_steamid.txt
+            if !steamID.isEmpty {
+                try steamID.write(to: settingsDir.appending(path: "force_steamid.txt"),
+                                  atomically: true, encoding: .utf8)
+            }
+
+            // force_language.txt
+            try "english".write(to: settingsDir.appending(path: "force_language.txt"),
+                                atomically: true, encoding: .utf8)
+
+            // disable_overlay.txt — overlay crashes under Wine
+            try "".write(to: settingsDir.appending(path: "disable_overlay.txt"),
+                         atomically: true, encoding: .utf8)
+
+            // Replace steam_api DLLs (backup originals if they exist, or place new ones)
             for dllName in ["steam_api.dll", "steam_api64.dll"] {
                 let goldbergDLL = goldbergDir.appending(path: dllName)
                 guard fm.fileExists(atPath: goldbergDLL.path(percentEncoded: false)) else { continue }
 
                 let target = dir.appending(path: dllName)
-                guard fm.fileExists(atPath: target.path(percentEncoded: false)) else { continue }
-
-                let backup = dir.appending(path: dllName + ".original_jack")
-                if !fm.fileExists(atPath: backup.path(percentEncoded: false)) {
-                    try fm.copyItem(at: target, to: backup)
+                if fm.fileExists(atPath: target.path(percentEncoded: false)) {
+                    let backup = dir.appending(path: dllName + ".original_jack")
+                    if !fm.fileExists(atPath: backup.path(percentEncoded: false)) {
+                        try fm.copyItem(at: target, to: backup)
+                    }
+                    try fm.removeItem(at: target)
                 }
-                try fm.removeItem(at: target)
                 try fm.copyItem(at: goldbergDLL, to: target)
             }
 
@@ -207,6 +194,13 @@ public final class GoldbergService: @unchecked Sendable {
                 try? fm.removeItem(at: target)
                 try fm.copyItem(at: goldbergDLL, to: target)
             }
+
+            // Clean up gbe_fork artifacts if switching from gbe_fork
+            for file in ["configs.main.ini", "configs.user.ini", "configs.app.ini",
+                         "configs.overlay.ini", "steam_interfaces.txt"] {
+                try? fm.removeItem(at: settingsDir.appending(path: file))
+            }
+            try? fm.removeItem(at: dir.appending(path: "EMU_MISSING_INTERFACE.txt"))
         }
     }
 
@@ -215,7 +209,6 @@ public final class GoldbergService: @unchecked Sendable {
         let fm = FileManager.default
         let searchRoot = gameDir ?? exeDir
 
-        // Find all directories with .original_jack backups
         var dirs = Set<URL>()
         dirs.insert(exeDir)
         if let enumerator = fm.enumerator(at: searchRoot, includingPropertiesForKeys: nil) {
@@ -239,6 +232,7 @@ public final class GoldbergService: @unchecked Sendable {
                 try? fm.removeItem(at: dir.appending(path: dllName))
             }
             try? fm.removeItem(at: dir.appending(path: "steam_settings"))
+            try? fm.removeItem(at: dir.appending(path: "EMU_MISSING_INTERFACE.txt"))
         }
     }
 
@@ -256,4 +250,3 @@ public final class GoldbergService: @unchecked Sendable {
         return false
     }
 }
-

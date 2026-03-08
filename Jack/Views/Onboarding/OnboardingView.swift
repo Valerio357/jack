@@ -23,6 +23,7 @@ struct OnboardingView: View {
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("steamUserID") private var steamUserID = ""
     @AppStorage("steamUsername") private var steamUsername = ""
+    @Environment(\.dismiss) private var dismiss
     @State private var currentStep = 0
 
     private let totalSteps = 3
@@ -42,6 +43,7 @@ struct OnboardingView: View {
 
                 ReadyStep(onFinish: {
                     hasCompletedOnboarding = true
+                    dismiss()
                     // Initialize Wine prefix in background — don't block onboarding
                     Task.detached(priority: .background) {
                         if let bottle = try? await BottleVM.shared.createSharedSteamBottle() {

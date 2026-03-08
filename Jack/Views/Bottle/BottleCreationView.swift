@@ -24,8 +24,6 @@ struct BottleCreationView: View {
 
     @State private var newBottleName: String = ""
     @State private var newBottleVersion: WinVersion = .win10
-    @State private var newBottleURL: URL = UserDefaults.standard.url(forKey: "defaultBottleLocation")
-                                           ?? BottleData.defaultBottleDir
     @State private var nameValid: Bool = false
 
     @Environment(\.dismiss) private var dismiss
@@ -44,22 +42,9 @@ struct BottleCreationView: View {
                     }
                 }
 
-                ActionView(
-                    text: "create.path",
-                    subtitle: newBottleURL.prettyPath(),
-                    actionName: "create.browse"
-                ) {
-                    let panel = NSOpenPanel()
-                    panel.canChooseFiles = false
-                    panel.canChooseDirectories = true
-                    panel.allowsMultipleSelection = false
-                    panel.canCreateDirectories = true
-                    panel.directoryURL = BottleData.containerDir
-                    panel.begin { result in
-                        if result == .OK, let url = panel.urls.first {
-                            newBottleURL = url
-                        }
-                    }
+                LabeledContent("create.path") {
+                    Text(BottleData.defaultBottleDir.prettyPath())
+                        .foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -90,7 +75,7 @@ struct BottleCreationView: View {
     func submit() {
         newlyCreatedBottleURL = BottleVM.shared.createNewBottle(bottleName: newBottleName,
                                                                 winVersion: newBottleVersion,
-                                                                bottleURL: newBottleURL)
+                                                                bottleURL: BottleData.defaultBottleDir)
         dismiss()
     }
 }

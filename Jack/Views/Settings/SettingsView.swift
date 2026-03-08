@@ -23,7 +23,6 @@ struct SettingsView: View {
     @AppStorage("SUEnableAutomaticChecks") var whiskyUpdate = true
     @AppStorage("killOnTerminate") var killOnTerminate = true
     @AppStorage("checkJackWineUpdates") var checkJackWineUpdates = true
-    @AppStorage("defaultBottleLocation") var defaultBottleLocation = BottleData.defaultBottleDir
     @AppStorage("jackDataLocation") var jackDataLocation: URL?
     @AppStorage("steamUserID") var steamUserID = ""
     @AppStorage("steamUsername") var steamUsername = ""
@@ -32,6 +31,8 @@ struct SettingsView: View {
     @State private var steamPassword = ""
     @State private var steamGuardCode = ""
     @State private var loginStatus: LoginTestStatus = .idle
+    @State private var loginStatusText = ""
+    @State private var guardType: SteamGuardType?
     @State private var steamCMDInstalled = SteamCMDService.shared.isInstalled
     @State private var isInstallingCMD = false
 
@@ -72,22 +73,9 @@ struct SettingsView: View {
                         }
                         .foregroundStyle(.red)
                     }
-                    ActionView(
-                        text: "Default bottle path",
-                        subtitle: defaultBottleLocation.prettyPath(),
-                        actionName: "create.browse"
-                    ) {
-                        let panel = NSOpenPanel()
-                        panel.canChooseFiles = false
-                        panel.canChooseDirectories = true
-                        panel.allowsMultipleSelection = false
-                        panel.canCreateDirectories = true
-                        panel.directoryURL = BottleData.containerDir
-                        panel.begin { result in
-                            if result == .OK, let url = panel.urls.first {
-                                defaultBottleLocation = url
-                            }
-                        }
+                    LabeledContent("Default bottle path") {
+                        Text(BottleData.defaultBottleDir.prettyPath())
+                            .foregroundStyle(.secondary)
                     }
                 }
                 Section("settings.updates") {
@@ -100,22 +88,31 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         LabeledContent("Steam ID", value: steamUserID)
+                        if !steamUsername.isEmpty {
+                            LabeledContent("Account", value: steamUsername)
+                        }
                     }
 
-                    TextField("Steam Username", text: $steamUsername)
-                        .textContentType(.username)
+                    if steamUserID.isEmpty || loginStatus == .failed("") || loginStatus != .idle {
+                        TextField("Steam Username", text: $steamUsername)
+                            .textContentType(.username)
 
-                    SecureField("Password", text: $steamPassword)
-                        .textContentType(.password)
+                        SecureField("Password", text: $steamPassword)
+                            .textContentType(.password)
 
-                    TextField("Steam Guard Code (5 characters)", text: $steamGuardCode)
-                        .textContentType(.oneTimeCode)
+                        if guardType != nil {
+                            TextField("Steam Guard Code", text: $steamGuardCode)
+                                .textContentType(.oneTimeCode)
+                        }
+                    }
 
                     HStack {
-                        Button(steamUsername.isEmpty ? "Sign In" : "Test Login") {
-                            testLogin()
+                        if steamUserID.isEmpty {
+                            Button("Sign In") {
+                                nativeLogin()
+                            }
+                            .disabled(steamUsername.isEmpty || steamPassword.isEmpty || loginStatus == .testing)
                         }
-                        .disabled(steamUsername.isEmpty || steamPassword.isEmpty || steamGuardCode.isEmpty || loginStatus == .testing)
 
                         Spacer()
 
@@ -124,6 +121,9 @@ struct SettingsView: View {
                             EmptyView()
                         case .testing:
                             ProgressView().controlSize(.small)
+                            Text(loginStatusText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         case .success:
                             Label("OK", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(Color.jackSuccess)
@@ -134,18 +134,18 @@ struct SettingsView: View {
                                 .font(.caption)
                                 .lineLimit(3)
                         }
-
                     }
 
                     if !steamUserID.isEmpty {
                         Button("Disconnect account") {
+                            SteamSessionManager.shared.logout()
                             steamUserID = ""
                             steamUsername = ""
                         }
                         .foregroundStyle(.red)
                     }
 
-                    Text("SteamCMD downloads games and loads your library. After the first login, credentials are saved automatically.")
+                    Text("Native Steam login. No Wine needed for authentication.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -198,29 +198,70 @@ struct SettingsView: View {
         }
     }
 
-    private func testLogin() {
+    private func nativeLogin() {
         loginStatus = .testing
+        loginStatusText = "Connecting…"
         let username = steamUsername
         let password = steamPassword
         let code = steamGuardCode
 
         Task {
             do {
-                try await SteamCMDService.shared.ensureInstalled()
-                steamCMDInstalled = true
-                let result = try await SteamCMDService.shared.login(
-                    username: username,
-                    password: password,
-                    steamGuardCode: code
-                )
-                if !result.steamID64.isEmpty {
-                    steamUserID = result.steamID64
+                let auth = SteamNativeAuth.shared
+
+                // If we have a guard code, submit it first
+                if let gt = guardType, !code.isEmpty {
+                    loginStatusText = "Submitting Steam Guard code…"
+                    try await auth.submitGuardCode(code, type: gt)
+                    steamGuardCode = ""
                 }
+
+                // Begin login if no pending session
+                if guardType == nil {
+                    loginStatusText = "Authenticating…"
+                    let gt = try await auth.beginLogin(accountName: username, password: password)
+                    guardType = gt
+
+                    switch gt {
+                    case .none:
+                        break // No guard needed
+                    case .deviceConfirmation:
+                        loginStatusText = "Approve on your Steam mobile app…"
+                    case .deviceCode:
+                        loginStatusText = "Enter authenticator code"
+                        loginStatus = .failed("Enter your Steam Guard code and press Sign In again.")
+                        return
+                    case .emailCode(let domain):
+                        loginStatusText = "Enter code from email (\(domain))"
+                        loginStatus = .failed("Enter the code sent to \(domain) and press Sign In again.")
+                        return
+                    case .emailConfirmation(let domain):
+                        loginStatusText = "Confirm via email (\(domain))…"
+                    }
+                }
+
+                // Poll for result
+                loginStatusText = "Waiting for approval…"
+                let result = try await auth.pollForResult()
+
+                // Save session
+                SteamSessionManager.shared.saveSession(result: result)
+                steamUserID = result.steamID64
+                steamUsername = result.accountName.isEmpty ? username : result.accountName
+
+                // Also install SteamCMD for game downloads
+                try? await SteamCMDService.shared.ensureInstalled()
+                steamCMDInstalled = SteamCMDService.shared.isInstalled
+
                 loginStatus = .success
                 steamPassword = ""
                 steamGuardCode = ""
+                guardType = nil
+                loginStatusText = ""
             } catch {
+                guardType = nil
                 loginStatus = .failed(error.localizedDescription)
+                loginStatusText = ""
             }
         }
     }

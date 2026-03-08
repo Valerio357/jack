@@ -34,11 +34,37 @@ public struct BottleData: Codable {
     }
 
     /// Set a custom root directory for all Jack data, or `nil` to restore the default.
+    /// Migrates stored bottle paths from the old container to the new one.
     public static func setCustomDataLocation(_ url: URL?) {
+        let oldContainer = containerDir
+
         if let url {
             UserDefaults.standard.set(url, forKey: "jackDataLocation")
         } else {
             UserDefaults.standard.removeObject(forKey: "jackDataLocation")
+        }
+
+        let newContainer = containerDir
+        guard oldContainer != newContainer else { return }
+
+        // Migrate bottle paths in the plist from old container to new container
+        var data = BottleData()
+        let oldPrefix = oldContainer.path(percentEncoded: false)
+        let newPrefix = newContainer.path(percentEncoded: false)
+        var changed = false
+
+        data.paths = data.paths.map { path in
+            let pathStr = path.path(percentEncoded: false)
+            if pathStr.hasPrefix(oldPrefix) {
+                let relative = String(pathStr.dropFirst(oldPrefix.count))
+                changed = true
+                return newContainer.appending(path: relative)
+            }
+            return path
+        }
+
+        if changed {
+            data.encode()
         }
     }
 
