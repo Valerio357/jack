@@ -490,9 +490,9 @@ struct GameDetailPanel: View {
                                         Image(systemName: "shield.checkered")
                                             .foregroundStyle(Color.jackAccent)
                                         VStack(alignment: .leading, spacing: 1) {
-                                            Text("Goldberg DRM Bypass")
+                                            Text("Run without Steam")
                                                 .font(.system(size: 12, weight: .medium))
-                                            Text("For games with Steam DRM (e.g. Dark Souls). Emulates steam_api locally.")
+                                            Text("For games that requires Steam (e.g. Dark Souls). Emulates steam_api locally.")
                                                 .font(.system(size: 10))
                                                 .foregroundStyle(.white.opacity(0.3))
                                         }
