@@ -24,6 +24,7 @@ struct SettingsView: View {
     @AppStorage("killOnTerminate") var killOnTerminate = true
     @AppStorage("checkJackWineUpdates") var checkJackWineUpdates = true
     @AppStorage("defaultBottleLocation") var defaultBottleLocation = BottleData.defaultBottleDir
+    @AppStorage("jackDataLocation") var jackDataLocation: URL?
     @AppStorage("steamUserID") var steamUserID = ""
     @AppStorage("steamUsername") var steamUsername = ""
     @Environment(\.dismiss) var dismiss
@@ -46,6 +47,31 @@ struct SettingsView: View {
             Form {
                 Section("settings.general") {
                     Toggle("Terminate Wine processes when Jack closes", isOn: $killOnTerminate)
+                    ActionView(
+                        text: "Jack data location",
+                        subtitle: BottleData.containerDir.prettyPath(),
+                        actionName: "create.browse"
+                    ) {
+                        let panel = NSOpenPanel()
+                        panel.canChooseFiles = false
+                        panel.canChooseDirectories = true
+                        panel.allowsMultipleSelection = false
+                        panel.canCreateDirectories = true
+                        panel.directoryURL = BottleData.containerDir
+                        panel.begin { result in
+                            if result == .OK, let url = panel.urls.first {
+                                jackDataLocation = url
+                                BottleData.setCustomDataLocation(url)
+                            }
+                        }
+                    }
+                    if jackDataLocation != nil {
+                        Button("Restore default location") {
+                            jackDataLocation = nil
+                            BottleData.setCustomDataLocation(nil)
+                        }
+                        .foregroundStyle(.red)
+                    }
                     ActionView(
                         text: "Default bottle path",
                         subtitle: defaultBottleLocation.prettyPath(),

@@ -20,33 +20,61 @@ import Foundation
 import SemanticVersion
 
 public struct BottleData: Codable {
-    public static let containerDir = FileManager.default.homeDirectoryForCurrentUser
+    private static let defaultContainerDir = FileManager.default.homeDirectoryForCurrentUser
         .appending(path: "Library")
         .appending(path: "Containers")
         .appending(path: Bundle.jackBundleIdentifier)
 
-    public static let bottleEntriesDir = containerDir
-        .appending(path: "BottleVM")
-        .appendingPathExtension("plist")
+    /// The root directory for all Jack data. Configurable via Settings.
+    public static var containerDir: URL {
+        if let custom = UserDefaults.standard.url(forKey: "jackDataLocation") {
+            return custom
+        }
+        return defaultContainerDir
+    }
 
-    public static let defaultBottleDir = containerDir
-        .appending(path: "Bottles")
+    /// Set a custom root directory for all Jack data, or `nil` to restore the default.
+    public static func setCustomDataLocation(_ url: URL?) {
+        if let url {
+            UserDefaults.standard.set(url, forKey: "jackDataLocation")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "jackDataLocation")
+        }
+    }
 
-    public static let sharedDir = containerDir.appending(path: "Shared")
-    
+    public static var bottleEntriesDir: URL {
+        containerDir
+            .appending(path: "BottleVM")
+            .appendingPathExtension("plist")
+    }
+
+    public static var defaultBottleDir: URL {
+        containerDir.appending(path: "Bottles")
+    }
+
+    public static var sharedDir: URL {
+        containerDir.appending(path: "Shared")
+    }
+
     /// Path to Steam installation inside the Shared bottle
-    public static let steamDir = sharedDir
-        .appending(path: "drive_c")
-        .appending(path: "Program Files (x86)")
-        .appending(path: "Steam")
+    public static var steamDir: URL {
+        sharedDir
+            .appending(path: "drive_c")
+            .appending(path: "Program Files (x86)")
+            .appending(path: "Steam")
+    }
 
     /// Path to native macOS SteamCMD installation
-    public static let steamCMDDir = containerDir.appending(path: "SteamCMD")
+    public static var steamCMDDir: URL {
+        containerDir.appending(path: "SteamCMD")
+    }
 
     /// Path to installed games (steamapps/common)
-    public static let steamAppsDir = steamDir
-        .appending(path: "steamapps")
-        .appending(path: "common")
+    public static var steamAppsDir: URL {
+        steamDir
+            .appending(path: "steamapps")
+            .appending(path: "common")
+    }
 
     static let currentVersion = SemanticVersion(1, 0, 0)
 
