@@ -20,6 +20,23 @@ public final class DependencyManager: @unchecked Sendable {
 
     private init() {}
 
+    // MARK: - Venv
+
+    /// Jack's dedicated Python virtual environment directory.
+    public static var venvDir: URL {
+        BottleData.containerDir.appending(path: "Python")
+    }
+
+    /// The python3 binary inside the venv.
+    public var venvPython: String {
+        Self.venvDir.appending(path: "bin/python3").path(percentEncoded: false)
+    }
+
+    /// Whether the venv exists and has the python binary.
+    public var isVenvReady: Bool {
+        FileManager.default.fileExists(atPath: venvPython)
+    }
+
     // MARK: - Dependency Status
 
     public struct Status: Sendable {
@@ -50,8 +67,8 @@ public final class DependencyManager: @unchecked Sendable {
 
     // MARK: - Python 3
 
-    /// The Python 3 path Jack uses (prefers 3.10 for steam library compatibility).
-    public var python3Path: String? {
+    /// Find system Python 3 (used to create the venv).
+    public var systemPython3Path: String? {
         for path in ["/usr/local/bin/python3", "/opt/homebrew/bin/python3", "/usr/bin/python3"] {
             if FileManager.default.fileExists(atPath: path) { return path }
         }
@@ -59,12 +76,19 @@ public final class DependencyManager: @unchecked Sendable {
     }
 
     public var isPython3Installed: Bool {
-        python3Path != nil
+        systemPython3Path != nil
     }
 
-    /// Check if required pip packages (steam, gevent) are importable.
+    /// The python path to use for running scripts — venv if available, system otherwise.
+    public var pythonPath: String {
+        if isVenvReady { return venvPython }
+        return systemPython3Path ?? "/usr/bin/python3"
+    }
+
+    /// Check if required pip packages (steam, gevent) are importable in the venv.
     public func checkPythonPackages() -> Bool {
-        guard let python = python3Path else { return false }
+        let python = isVenvReady ? venvPython : (systemPython3Path ?? "")
+        guard !python.isEmpty, FileManager.default.fileExists(atPath: python) else { return false }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: python)
@@ -81,36 +105,70 @@ public final class DependencyManager: @unchecked Sendable {
         }
     }
 
-    /// Install the required pip packages.
+    /// Create the venv and install required packages.
     public func installPythonPackages() async throws {
-        guard let python = python3Path else {
+        guard let sysPython = systemPython3Path else {
             throw DependencyError.pythonNotFound
         }
 
-        Self.log.info("Installing Python packages: steam, gevent")
+        let venvPath = Self.venvDir.path(percentEncoded: false)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: python)
-        process.arguments = ["-m", "pip", "install", "--user", "--quiet", "steam", "gevent"]
+        // Step 1: Create venv if it doesn't exist
+        if !isVenvReady {
+            Self.log.info("Creating Python venv at \(venvPath)")
 
-        let stderr = Pipe()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = stderr
+            let fm = FileManager.default
+            let parent = Self.venvDir.deletingLastPathComponent()
+            if !fm.fileExists(atPath: parent.path(percentEncoded: false)) {
+                try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+            }
 
-        try process.run()
+            let venvProc = Process()
+            venvProc.executableURL = URL(fileURLWithPath: sysPython)
+            venvProc.arguments = ["-m", "venv", venvPath]
 
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            process.terminationHandler = { _ in c.resume() }
+            let stderr = Pipe()
+            venvProc.standardOutput = FileHandle.nullDevice
+            venvProc.standardError = stderr
+
+            try venvProc.run()
+
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                venvProc.terminationHandler = { _ in c.resume() }
+            }
+
+            if venvProc.terminationStatus != 0 {
+                let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+                let errStr = String(data: errData, encoding: .utf8) ?? ""
+                throw DependencyError.pipInstallFailed("Failed to create venv: \(errStr)")
+            }
         }
 
-        if process.terminationStatus != 0 {
-            let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+        // Step 2: Install packages in the venv
+        Self.log.info("Installing Python packages: steam, gevent")
+
+        let pipProc = Process()
+        pipProc.executableURL = URL(fileURLWithPath: venvPython)
+        pipProc.arguments = ["-m", "pip", "install", "--quiet", "steam", "gevent"]
+
+        let pipStderr = Pipe()
+        pipProc.standardOutput = FileHandle.nullDevice
+        pipProc.standardError = pipStderr
+
+        try pipProc.run()
+
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            pipProc.terminationHandler = { _ in c.resume() }
+        }
+
+        if pipProc.terminationStatus != 0 {
+            let errData = pipStderr.fileHandleForReading.readDataToEndOfFile()
             let errStr = String(data: errData, encoding: .utf8) ?? ""
             Self.log.error("pip install failed: \(errStr)")
             throw DependencyError.pipInstallFailed(errStr)
         }
 
-        Self.log.info("Python packages installed successfully")
+        Self.log.info("Python packages installed successfully in venv")
     }
 
     // MARK: - Mono

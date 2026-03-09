@@ -26,12 +26,9 @@ public final class SteamNativeService: @unchecked Sendable {
     }
 
     /// Path to python3 interpreter.
-    /// Prefers /usr/local/bin/python3 (3.10) where the `steam` library is installed.
+    /// Uses Jack's dedicated venv if available, otherwise falls back to system python.
     private var pythonPath: String {
-        for path in ["/usr/local/bin/python3", "/opt/homebrew/bin/python3", "/usr/bin/python3"] {
-            if FileManager.default.fileExists(atPath: path) { return path }
-        }
-        return "/usr/bin/python3"
+        DependencyManager.shared.pythonPath
     }
 
     private init() {}
