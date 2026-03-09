@@ -41,15 +41,35 @@ from steam.steamid import SteamID
 DATA_DIR = Path.home() / "Library" / "Application Support" / "com.isaacmarovitz.Jack" / "SteamSession"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Auto-Cloud root type → Wine prefix subpath
-ROOT_MAP = {
-    1: "drive_c/users/crossover/Documents",
-    2: "drive_c/users/crossover/Documents",
-    3: "drive_c/users/crossover/AppData/Local",
-    4: "drive_c/users/crossover/AppData/Roaming",
-    5: "drive_c/users/crossover/AppData/LocalLow",
-    6: "drive_c/users/crossover/Saved Games",
+# Auto-Cloud root type → Wine prefix subpath (placeholder; resolved per-bottle)
+_ROOT_SUFFIXES = {
+    1: "Documents",
+    2: "Documents",
+    3: "AppData/Local",
+    4: "AppData/Roaming",
+    5: "AppData/LocalLow",
+    6: "Saved Games",
 }
+
+
+def _detect_wine_user(bottle_path):
+    """Detect the Wine username inside a bottle prefix.
+    Looks for a user directory under drive_c/users/ that has an AppData folder."""
+    users_dir = Path(bottle_path) / "drive_c" / "users"
+    if not users_dir.is_dir():
+        return "crossover"  # fallback
+    for entry in users_dir.iterdir():
+        if entry.name in ("Public", "default", "Default"):
+            continue
+        if (entry / "AppData").is_dir():
+            return entry.name
+    return "crossover"
+
+
+def build_root_map(bottle_path):
+    """Build ROOT_MAP with the actual Wine username for this bottle."""
+    user = _detect_wine_user(bottle_path)
+    return {k: f"drive_c/users/{user}/{v}" for k, v in _ROOT_SUFFIXES.items()}
 
 
 def log(msg):
@@ -481,6 +501,8 @@ def sync_down(client, appid, bottle_path):
         return 0, err
 
     bottle = Path(bottle_path)
+    root_map = build_root_map(bottle_path)
+    wine_user = _detect_wine_user(bottle_path)
     downloaded = 0
 
     # Also collect prefixed paths for non-prefixed duplicates
@@ -513,7 +535,7 @@ def sync_down(client, appid, bottle_path):
         ]:
             if filename.startswith(prefix):
                 rel = filename[len(prefix):]
-                dest = bottle / ROOT_MAP[root_val] / rel
+                dest = bottle / root_map[root_val] / rel
                 destinations.append(dest)
                 autocloud_dirs.add(dest.parent)
                 matched_prefix = True
@@ -521,7 +543,7 @@ def sync_down(client, appid, bottle_path):
 
         if not matched_prefix:
             # Non-prefixed file → Goldberg save dir
-            goldberg_dest = (bottle / "drive_c/users/crossover/AppData/Roaming"
+            goldberg_dest = (bottle / f"drive_c/users/{wine_user}/AppData/Roaming"
                              / "Goldberg SteamEmu Saves" / str(appid) / "remote" / filename)
             destinations.append(goldberg_dest)
 
@@ -567,13 +589,14 @@ def sync_up(client, appid, bottle_path):
         return 0, err
 
     bottle = Path(bottle_path)
+    root_map = build_root_map(bottle_path)
     uploaded = 0
 
     # Build map of cloud filenames → file info
     cloud_map = {f['filename']: f for f in files}
 
     # Scan Wine prefix for modified save files
-    for root_val, subpath in ROOT_MAP.items():
+    for root_val, subpath in root_map.items():
         scan_dir = bottle / subpath
         if not scan_dir.exists():
             continue
