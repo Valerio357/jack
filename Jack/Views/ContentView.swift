@@ -78,7 +78,8 @@ struct ContentView: View {
             if !FileManager.default.fileExists(atPath: wineBin.path(percentEncoded: false))
                 || !dm.isPython3Installed
                 || !dm.checkPythonPackages()
-                || !SteamCMDService.shared.isInstalled {
+                || !SteamCMDService.shared.isInstalled
+                || !GPTKInstaller.shared.isInstalled {
                 showSetup = true
             }
         }

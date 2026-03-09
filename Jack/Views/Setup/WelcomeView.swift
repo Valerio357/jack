@@ -26,6 +26,7 @@ struct WelcomeView: View {
     @State var pythonPkgsInstalled: Bool?
     @State var steamCMDInstalled: Bool?
     @State var monoInstalled: Bool?
+    @State var gptkInstalled: Bool?
     @State var shouldCheckInstallStatus: Bool = false
     @Binding var path: [SetupStage]
     @Binding var showSetup: Bool
@@ -37,6 +38,7 @@ struct WelcomeView: View {
         && python3Installed == true
         && pythonPkgsInstalled == true
         && steamCMDInstalled == true
+        && gptkInstalled == true
         // mono is optional
     }
 
@@ -44,12 +46,14 @@ struct WelcomeView: View {
         rosettaInstalled != nil && whiskyWineInstalled != nil
         && python3Installed != nil && pythonPkgsInstalled != nil
         && steamCMDInstalled != nil && monoInstalled != nil
+        && gptkInstalled != nil
     }
 
     /// True if anything besides Rosetta/Wine needs installing.
     private var needsDependencyInstall: Bool {
         python3Installed == false || pythonPkgsInstalled == false
         || steamCMDInstalled == false || monoInstalled == false
+        || gptkInstalled == false
     }
 
     var body: some View {
@@ -93,6 +97,9 @@ struct WelcomeView: View {
                 InstallStatusView(isInstalled: $monoInstalled,
                                   shouldCheckInstallStatus: $shouldCheckInstallStatus,
                                   name: "Mono (optional)")
+                InstallStatusView(isInstalled: $gptkInstalled,
+                                  shouldCheckInstallStatus: $shouldCheckInstallStatus,
+                                  name: "GPTK D3DMetal")
             }
             .formStyle(.grouped)
             .scrollDisabled(true)
@@ -134,7 +141,7 @@ struct WelcomeView: View {
                 }
             }
         }
-        .frame(width: 400, height: 350)
+        .frame(width: 400, height: 390)
     }
 
     func checkInstallStatus() {
@@ -148,9 +155,11 @@ struct WelcomeView: View {
         Task.detached {
             let pkgs = dm.checkPythonPackages()
             let mono = dm.isMonoInstalled
+            let gptk = GPTKInstaller.shared.isInstalled
             await MainActor.run {
                 pythonPkgsInstalled = pkgs
                 monoInstalled = mono
+                gptkInstalled = gptk
             }
         }
     }

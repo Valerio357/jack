@@ -22,10 +22,30 @@ import os.log
 public class Wine {
     /// URL to the installed `DXVK` folder
     private static let dxvkFolder: URL = JackWineInstaller.libraryFolder.appending(path: "DXVK")
-    /// Path to the `wine64` binary (wine-crossover)
+    /// Path to the `wine64` binary (wine-crossover) — default engine
     public static let wineBinary: URL = JackWineInstaller.binFolder.appending(path: "wine64")
     /// Parth to the `wineserver` binary
     private static let wineserverBinary: URL = JackWineInstaller.binFolder.appending(path: "wineserver")
+
+    /// Get the wine64 binary for a specific engine.
+    public static func wineBinary(for engine: WineEngine) -> URL {
+        switch engine {
+        case .crossover:
+            return JackWineInstaller.binFolder.appending(path: "wine64")
+        case .gptk:
+            return GPTKInstaller.wineBinary
+        }
+    }
+
+    /// Get the wineserver binary for a specific engine.
+    public static func wineserverBinary(for engine: WineEngine) -> URL {
+        switch engine {
+        case .crossover:
+            return JackWineInstaller.binFolder.appending(path: "wineserver")
+        case .gptk:
+            return GPTKInstaller.wineserverBinary
+        }
+    }
 
     /// Run a process on a executable file given by the `executableURL`
     private static func runProcess(
@@ -47,10 +67,11 @@ public class Wine {
     /// Run a `wine` process with the given arguments and environment variables returning a stream of output
     private static func runWineProcess(
         name: String? = nil, args: [String], environment: [String: String] = [:],
-        directory: URL? = nil, fileHandle: FileHandle?
+        directory: URL? = nil, fileHandle: FileHandle?, engine: WineEngine = .crossover
     ) throws -> AsyncStream<ProcessOutput> {
         return try runProcess(
-            name: name, args: args, environment: environment, executableURL: wineBinary,
+            name: name, args: args, environment: environment,
+            executableURL: wineBinary(for: engine),
             directory: directory, fileHandle: fileHandle
         )
     }
@@ -58,10 +79,11 @@ public class Wine {
     /// Run a `wineserver` process with the given arguments and environment variables returning a stream of output
     private static func runWineserverProcess(
         name: String? = nil, args: [String], environment: [String: String] = [:],
-        fileHandle: FileHandle?
+        fileHandle: FileHandle?, engine: WineEngine = .crossover
     ) throws -> AsyncStream<ProcessOutput> {
         return try runProcess(
-            name: name, args: args, environment: environment, executableURL: wineserverBinary,
+            name: name, args: args, environment: environment,
+            executableURL: wineserverBinary(for: engine),
             fileHandle: fileHandle
         )
     }
@@ -74,12 +96,13 @@ public class Wine {
         let fileHandle = try makeFileHandle()
         fileHandle.writeApplicaitonInfo()
         fileHandle.writeInfo(for: bottle)
+        let engine = bottle.settings.wineEngine
 
         return try runWineProcess(
             name: name, args: args,
             environment: constructWineEnvironment(for: bottle, environment: environment),
             directory: workingDirectory,
-            fileHandle: fileHandle
+            fileHandle: fileHandle, engine: engine
         )
     }
 
@@ -90,11 +113,12 @@ public class Wine {
         let fileHandle = try makeFileHandle()
         fileHandle.writeApplicaitonInfo()
         fileHandle.writeInfo(for: bottle)
+        let engine = bottle.settings.wineEngine
 
         return try runWineserverProcess(
             name: name, args: args,
             environment: constructWineServerEnvironment(for: bottle, environment: environment),
-            fileHandle: fileHandle
+            fileHandle: fileHandle, engine: engine
         )
     }
 
@@ -102,7 +126,8 @@ public class Wine {
     public static func runProgram(
         at url: URL, args: [String] = [], bottle: Bottle, environment: [String: String] = [:]
     ) async throws {
-        if bottle.settings.dxvk {
+        // DXVK is only used with CrossOver Wine; GPTK uses D3DMetal instead
+        if bottle.settings.dxvk && bottle.settings.wineEngine == .crossover {
             try enableDXVK(bottle: bottle)
         }
 
@@ -116,7 +141,8 @@ public class Wine {
     public static func generateRunCommand(
         at url: URL, bottle: Bottle, args: String, environment: [String: String]
     ) -> String {
-        var wineCmd = "\(wineBinary.esc) start /unix \(url.esc) \(args)"
+        let binary = wineBinary(for: bottle.settings.wineEngine)
+        var wineCmd = "\(binary.esc) start /unix \(url.esc) \(args)"
         let env = constructWineEnvironment(for: bottle, environment: environment)
         for environment in env {
             wineCmd = "\(environment.key)=\"\(environment.value)\" " + wineCmd
@@ -126,8 +152,11 @@ public class Wine {
     }
 
     public static func generateTerminalEnvironmentCommand(bottle: Bottle) -> String {
+        let binDir = bottle.settings.wineEngine == .gptk
+            ? GPTKInstaller.gptkDir.appending(path: "wine/bin").path
+            : JackWineInstaller.binFolder.path
         var cmd = """
-        export PATH=\"\(JackWineInstaller.binFolder.path):$PATH\"
+        export PATH=\"\(binDir):$PATH\"
         export WINE=\"wine64\"
         alias wine=\"wine64\"
         alias winecfg=\"wine64 winecfg\"
@@ -177,12 +206,16 @@ public class Wine {
         fileHandle.writeApplicaitonInfo()
         var environment = environment
 
+        let engine: WineEngine
         if let bottle = bottle {
             fileHandle.writeInfo(for: bottle)
             environment = constructWineEnvironment(for: bottle, environment: environment)
+            engine = bottle.settings.wineEngine
+        } else {
+            engine = .crossover
         }
 
-        for await output in try runWineProcess(args: args, environment: environment, fileHandle: fileHandle) {
+        for await output in try runWineProcess(args: args, environment: environment, fileHandle: fileHandle, engine: engine) {
             switch output {
             case .started, .terminated:
                 break
@@ -231,9 +264,20 @@ public class Wine {
     private static func constructWineEnvironment(
         for bottle: Bottle, environment: [String: String] = [:]
     ) -> [String: String] {
-        let wineLibDir = JackWineInstaller.libraryFolder
-            .appending(path: "Wine").appending(path: "lib")
-        let externalDir = wineLibDir.appending(path: "external")
+        let engine = bottle.settings.wineEngine
+        let wineLibDir: URL
+        let externalDir: URL
+
+        switch engine {
+        case .crossover:
+            wineLibDir = JackWineInstaller.libraryFolder
+                .appending(path: "Wine").appending(path: "lib")
+            externalDir = wineLibDir.appending(path: "external")
+        case .gptk:
+            wineLibDir = GPTKInstaller.wineLibDir
+            externalDir = GPTKInstaller.externalDir
+        }
+
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "fixme-all",
@@ -293,19 +337,21 @@ public class Wine {
         let steamCfg = BottleData.steamDir.appending(path: "steam.cfg")
         try? FileManager.default.removeItem(at: steamCfg)
 
+        let engine = bottle.settings.wineEngine
+        let binary = wineBinary(for: engine)
         var env = constructWineEnvironment(for: bottle)
         env["LANG"] = "en_US.UTF-8"
         env["LC_ALL"] = "en_US.UTF-8"
 
         let process = Process()
-        process.executableURL = wineBinary
+        process.executableURL = binary
         process.arguments = [
             "start", "/unix", steamExe.path(percentEncoded: false),
             "-login", username, password,
             "-silent", "-allosarches", "-cef-force-32bit", "-no-dwrite"
         ]
         process.environment = env
-        process.currentDirectoryURL = wineBinary.deletingLastPathComponent()
+        process.currentDirectoryURL = binary.deletingLastPathComponent()
         try process.run()
     }
 
@@ -354,11 +400,12 @@ public class Wine {
             args += ["-login", username]
         }
 
+        let binary = wineBinary(for: bottle.settings.wineEngine)
         let process = Process()
-        process.executableURL = wineBinary
+        process.executableURL = binary
         process.arguments = args
         process.environment = env
-        process.currentDirectoryURL = wineBinary.deletingLastPathComponent()
+        process.currentDirectoryURL = binary.deletingLastPathComponent()
         try process.run()
         return process
     }
@@ -380,19 +427,20 @@ public class Wine {
         let steamCfg = BottleData.steamDir.appending(path: "steam.cfg")
         try? FileManager.default.removeItem(at: steamCfg)
 
+        let binary = wineBinary(for: bottle.settings.wineEngine)
         var env = constructWineEnvironment(for: bottle)
         env["LANG"] = "en_US.UTF-8"
         env["LC_ALL"] = "en_US.UTF-8"
 
         let process = Process()
-        process.executableURL = wineBinary
+        process.executableURL = binary
         process.arguments = [
             "start", "/unix", steamExe.path(percentEncoded: false),
             "-allosarches", "-no-dwrite"
             // No -silent, no -cef-force-32bit: allow full CEF UI for login
         ]
         process.environment = env
-        process.currentDirectoryURL = wineBinary.deletingLastPathComponent()
+        process.currentDirectoryURL = binary.deletingLastPathComponent()
         try process.run()
     }
 

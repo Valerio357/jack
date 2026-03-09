@@ -133,6 +133,16 @@ struct DependencyInstallView: View {
                 }
             }
 
+            // 5. GPTK (required — provides D3DMetal for DirectX 11/12 games)
+            if !GPTKInstaller.shared.isInstalled {
+                currentStep = "Installing GPTK (D3DMetal)…"
+                try await GPTKInstaller.shared.install { progress in
+                    Task { @MainActor in
+                        currentStep = progress
+                    }
+                }
+            }
+
             isInstalling = false
             success = true
 

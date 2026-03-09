@@ -465,9 +465,15 @@ struct GameDetailPanel: View {
                                     .font(.system(size: 10, weight: .bold))
                                     .foregroundStyle(.white.opacity(0.35))
 
-                                rendererPicker
+                                wineEnginePicker
 
                                 Divider().background(Color.white.opacity(0.06))
+
+                                if bottle.settings.wineEngine != .gptk {
+                                    rendererPicker
+
+                                    Divider().background(Color.white.opacity(0.06))
+                                }
 
                                 Toggle(isOn: $windowedMode) {
                                     HStack(spacing: 6) {
@@ -567,6 +573,52 @@ struct GameDetailPanel: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Game files will be deleted. You won't be able to play without reinstalling.")
+        }
+    }
+
+    private var wineEnginePicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("WINE ENGINE")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white.opacity(0.3))
+
+            Picker("Wine Engine", selection: $bottle.settings.wineEngine) {
+                Label("CrossOver", systemImage: "wineglass").tag(WineEngine.crossover)
+                Label("GPTK (D3DMetal)", systemImage: "diamond.fill").tag(WineEngine.gptk)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .onChange(of: bottle.settings.wineEngine) { _, newEngine in
+                // GPTK uses D3DMetal, not DXVK
+                if newEngine == .gptk {
+                    bottle.settings.dxvk = false
+                }
+                // Regenerate Wine built-in DLLs for the new engine
+                let prefix = bottle.url.path
+                let engine = newEngine
+                Task.detached { @Sendable in
+                    let binary = Wine.wineBinary(for: engine)
+                    let libPath = engine == .gptk
+                        ? "\(GPTKInstaller.wineLibDir.path(percentEncoded: false)):\(GPTKInstaller.externalDir.path(percentEncoded: false))"
+                        : "\(JackWineInstaller.libraryFolder.appending(path: "Wine/lib").path(percentEncoded: false)):\(JackWineInstaller.libraryFolder.appending(path: "Wine/lib/external").path(percentEncoded: false))"
+                    let process = Process()
+                    process.executableURL = binary
+                    process.arguments = ["wineboot", "--update"]
+                    process.environment = [
+                        "WINEPREFIX": prefix,
+                        "DYLD_FALLBACK_LIBRARY_PATH": libPath,
+                        "WINEESYNC": "1",
+                    ]
+                    try? process.run()
+                    process.waitUntilExit()
+                }
+            }
+
+            Text(bottle.settings.wineEngine == .gptk
+                 ? "Apple D3DMetal. Best for DirectX 11/12 games (UE4, UE5)."
+                 : "CrossOver Wine. Standard compatibility layer.")
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.35))
         }
     }
 
@@ -1091,8 +1143,8 @@ struct GameDetailPanel: View {
                 try? "".write(to: redistMarker, atomically: true, encoding: .utf8)
             }
 
-            // --- DXVK ---
-            if bottle.settings.dxvk {
+            // --- DXVK (only with CrossOver engine) ---
+            if bottle.settings.dxvk && bottle.settings.wineEngine == .crossover {
                 do {
                     try Wine.enableDXVK(bottle: bottle)
                 } catch {
@@ -1157,7 +1209,7 @@ struct GameDetailPanel: View {
             // --- Launch ---
             var steamEnv: [String: String] = [
                 "SteamAppId": "\(appID)",
-                "SteamGameId": "\(appID)"
+                "SteamGameId": "\(appID)",
             ]
             if goldbergEnabled && !steamStubActive {
                 steamEnv["WINEDLLOVERRIDES"] = "steam.exe=d;steamwebhelper.exe=d"

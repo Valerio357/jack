@@ -89,12 +89,25 @@ public enum EnhancedSync: Codable, Equatable {
     case none, esync, msync
 }
 
+public enum WineEngine: String, Codable, CaseIterable, Equatable {
+    case crossover = "crossover"
+    case gptk = "gptk"
+
+    public var displayName: String {
+        switch self {
+        case .crossover: return "CrossOver Wine"
+        case .gptk: return "GPTK (D3DMetal)"
+        }
+    }
+}
+
 public struct BottleWineConfig: Codable, Equatable {
     static let defaultWineVersion = SemanticVersion(7, 7, 0)
     var wineVersion: SemanticVersion = Self.defaultWineVersion
     var windowsVersion: WinVersion = .win10
     var enhancedSync: EnhancedSync = .msync
     var avxEnabled: Bool = false
+    var wineEngine: WineEngine = .crossover
 
     public init() {}
 
@@ -105,6 +118,7 @@ public struct BottleWineConfig: Codable, Equatable {
         self.windowsVersion = try container.decodeIfPresent(WinVersion.self, forKey: .windowsVersion) ?? .win10
         self.enhancedSync = try container.decodeIfPresent(EnhancedSync.self, forKey: .enhancedSync) ?? .msync
         self.avxEnabled = try container.decodeIfPresent(Bool.self, forKey: .avxEnabled) ?? false
+        self.wineEngine = try container.decodeIfPresent(WineEngine.self, forKey: .wineEngine) ?? .crossover
     }
     // swiftlint:enable line_length
 }
@@ -191,6 +205,11 @@ public struct BottleSettings: Codable, Equatable {
     public var avxEnabled: Bool {
         get { return wineConfig.avxEnabled }
         set { wineConfig.avxEnabled = newValue }
+    }
+
+    public var wineEngine: WineEngine {
+        get { return wineConfig.wineEngine }
+        set { wineConfig.wineEngine = newValue }
     }
 
     /// The pinned programs on this bottle

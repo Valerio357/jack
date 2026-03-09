@@ -46,10 +46,12 @@ public final class DependencyManager: @unchecked Sendable {
         public var pythonSteam: Bool
         public var steamCMD: Bool
         public var mono: Bool
+        public var gptk: Bool
 
         public var allReady: Bool {
             rosetta && jackWine && python3 && pythonSteam && steamCMD
             // mono is optional — only needed for Steamless DRM stripping
+            // gptk is optional — alternative Wine engine with D3DMetal
         }
     }
 
@@ -61,7 +63,8 @@ public final class DependencyManager: @unchecked Sendable {
             python3: isPython3Installed,
             pythonSteam: checkPythonPackages(),
             steamCMD: SteamCMDService.shared.isInstalled,
-            mono: isMonoInstalled
+            mono: isMonoInstalled,
+            gptk: GPTKInstaller.shared.isInstalled
         )
     }
 
