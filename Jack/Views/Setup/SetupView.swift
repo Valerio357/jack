@@ -22,6 +22,7 @@ enum SetupStage {
     case rosetta
     case whiskyWineDownload
     case whiskyWineInstall
+    case dependencies
 }
 
 struct SetupView: View {
@@ -43,6 +44,8 @@ struct SetupView: View {
                             JackWineDownloadView(tarLocation: $tarLocation, path: $path)
                         case .whiskyWineInstall:
                             JackWineInstallView(tarLocation: $tarLocation, path: $path, showSetup: $showSetup)
+                        case .dependencies:
+                            DependencyInstallView(path: $path, showSetup: $showSetup)
                         }
                     }
             }

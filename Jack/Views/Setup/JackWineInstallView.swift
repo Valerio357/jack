@@ -64,6 +64,12 @@ struct JackWineInstallView: View {
 
     @MainActor
     func proceed() {
+        let dm = DependencyManager.shared
+        if !dm.isPython3Installed || !dm.checkPythonPackages()
+            || !SteamCMDService.shared.isInstalled {
+            path.append(.dependencies)
+            return
+        }
         showSetup = false
     }
 }

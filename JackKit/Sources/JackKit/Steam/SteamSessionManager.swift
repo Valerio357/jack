@@ -238,6 +238,7 @@ public final class SteamSessionManager: @unchecked Sendable {
             kSecAttrAccount: Self.keychainAccount,
             kSecValueData: value.data(using: .utf8)!,
             kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecUseDataProtectionKeychain: true,
         ]
         SecItemAdd(query as CFDictionary, nil)
     }
@@ -249,10 +250,15 @@ public final class SteamSessionManager: @unchecked Sendable {
             kSecAttrAccount: Self.keychainAccount,
             kSecReturnData: true,
             kSecMatchLimit: kSecMatchLimitOne,
+            kSecUseDataProtectionKeychain: true,
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        if status != errSecSuccess {
+            // Fallback: try legacy keychain for migration
+            return loadFromLegacyKeychain(account: Self.keychainAccount)
+        }
+        guard let data = result as? Data else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
@@ -272,6 +278,7 @@ public final class SteamSessionManager: @unchecked Sendable {
             kSecAttrAccount: Self.keychainPasswordAccount,
             kSecValueData: password.data(using: .utf8)!,
             kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecUseDataProtectionKeychain: true,
         ]
         SecItemAdd(query as CFDictionary, nil)
     }
@@ -284,20 +291,71 @@ public final class SteamSessionManager: @unchecked Sendable {
             kSecAttrAccount: Self.keychainPasswordAccount,
             kSecReturnData: true,
             kSecMatchLimit: kSecMatchLimitOne,
+            kSecUseDataProtectionKeychain: true,
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        if status != errSecSuccess {
+            return loadFromLegacyKeychain(account: Self.keychainPasswordAccount)
+        }
+        guard let data = result as? Data else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
     private func deleteKeychainItem(account: String) {
+        // Delete from Data Protection keychain
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: Self.keychainService,
             kSecAttrAccount: account,
+            kSecUseDataProtectionKeychain: true,
         ]
         SecItemDelete(query as CFDictionary)
+
+        // Also clean up legacy keychain items
+        let legacyQuery: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: Self.keychainService,
+            kSecAttrAccount: account,
+        ]
+        SecItemDelete(legacyQuery as CFDictionary)
+    }
+
+    /// One-time fallback to read from legacy keychain and migrate to Data Protection keychain.
+    private func loadFromLegacyKeychain(account: String) -> String? {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: Self.keychainService,
+            kSecAttrAccount: account,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else { return nil }
+
+        // Migrate: save to Data Protection keychain and delete legacy
+        Self.log.info("Migrating keychain item '\(account)' to Data Protection keychain")
+        let saveQuery: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: Self.keychainService,
+            kSecAttrAccount: account,
+            kSecValueData: data,
+            kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecUseDataProtectionKeychain: true,
+        ]
+        SecItemAdd(saveQuery as CFDictionary, nil)
+
+        // Remove old legacy item
+        let deleteQuery: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: Self.keychainService,
+            kSecAttrAccount: account,
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+
+        return value
     }
 
     // MARK: - Types

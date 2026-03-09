@@ -315,24 +315,36 @@ public final class SteamNativeService: @unchecked Sendable {
             process.terminationHandler = { proc in
                 let outData = stdout.fileHandleForReading.readDataToEndOfFile()
                 let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+                let errStr = String(data: errData, encoding: .utf8) ?? ""
 
-                if let errStr = String(data: errData, encoding: .utf8), !errStr.isEmpty {
+                if !errStr.isEmpty {
                     Self.log.debug("jacksteam stderr: \(errStr)")
                 }
 
-                guard let outStr = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !outStr.isEmpty,
-                      let jsonData = outStr.data(using: .utf8),
-                      let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-                    if proc.terminationStatus != 0 {
-                        continuation.resume(throwing: SteamNativeError.toolFailed(proc.terminationStatus))
-                    } else {
-                        continuation.resume(returning: [:])
-                    }
+                // Try to parse the last JSON line from stdout (script may print debug before JSON)
+                let outStr = String(data: outData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                // Find the last line that looks like JSON
+                let jsonLine = outStr.components(separatedBy: .newlines)
+                    .last(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("{") })
+                    ?? outStr
+
+                if let jsonData = jsonLine.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                    continuation.resume(returning: json)
                     return
                 }
 
-                continuation.resume(returning: json)
+                if proc.terminationStatus != 0 {
+                    // Include stderr in the error for better diagnostics
+                    let lastErr = errStr.components(separatedBy: .newlines)
+                        .last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? ""
+                    let msg = lastErr.isEmpty ? "exit \(proc.terminationStatus)" : lastErr
+                    continuation.resume(throwing: SteamNativeError.loginFailed(msg))
+                } else {
+                    continuation.resume(returning: [:])
+                }
             }
 
             do {

@@ -1,2 +1,0 @@
-/tmp/bridge-publish/JackSteamBridge.pdb
-/tmp/bridge-publish/JackSteamBridge

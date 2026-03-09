@@ -110,6 +110,13 @@ struct RosettaView: View {
             return
         }
 
+        let dm = DependencyManager.shared
+        if !dm.isPython3Installed || !dm.checkPythonPackages()
+            || !SteamCMDService.shared.isInstalled {
+            path.append(.dependencies)
+            return
+        }
+
         showSetup = false
     }
 }

@@ -22,26 +22,51 @@ import JackKit
 struct WelcomeView: View {
     @State var rosettaInstalled: Bool?
     @State var whiskyWineInstalled: Bool?
+    @State var python3Installed: Bool?
+    @State var pythonPkgsInstalled: Bool?
+    @State var steamCMDInstalled: Bool?
+    @State var monoInstalled: Bool?
     @State var shouldCheckInstallStatus: Bool = false
     @Binding var path: [SetupStage]
     @Binding var showSetup: Bool
     var firstTime: Bool
 
+    private var allInstalled: Bool {
+        rosettaInstalled == true
+        && whiskyWineInstalled == true
+        && python3Installed == true
+        && pythonPkgsInstalled == true
+        && steamCMDInstalled == true
+        // mono is optional
+    }
+
+    private var hasChecked: Bool {
+        rosettaInstalled != nil && whiskyWineInstalled != nil
+        && python3Installed != nil && pythonPkgsInstalled != nil
+        && steamCMDInstalled != nil && monoInstalled != nil
+    }
+
+    /// True if anything besides Rosetta/Wine needs installing.
+    private var needsDependencyInstall: Bool {
+        python3Installed == false || pythonPkgsInstalled == false
+        || steamCMDInstalled == false || monoInstalled == false
+    }
+
     var body: some View {
         VStack {
             VStack {
                 if firstTime {
-                    Text("setup.welcome")
+                    Text("Welcome to Jack")
                         .font(.title)
                         .fontWeight(.bold)
-                    Text("setup.welcome.subtitle")
+                    Text("Let's get everything set up")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("setup.title")
+                    Text("Setup")
                         .font(.title)
                         .fontWeight(.bold)
-                    Text("setup.subtitle")
+                    Text("Check and install required components")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -56,6 +81,18 @@ struct WelcomeView: View {
                                   shouldCheckInstallStatus: $shouldCheckInstallStatus,
                                   showUninstall: true,
                                   name: "JackWine")
+                InstallStatusView(isInstalled: $python3Installed,
+                                  shouldCheckInstallStatus: $shouldCheckInstallStatus,
+                                  name: "Python 3")
+                InstallStatusView(isInstalled: $pythonPkgsInstalled,
+                                  shouldCheckInstallStatus: $shouldCheckInstallStatus,
+                                  name: "Steam Library")
+                InstallStatusView(isInstalled: $steamCMDInstalled,
+                                  shouldCheckInstallStatus: $shouldCheckInstallStatus,
+                                  name: "SteamCMD")
+                InstallStatusView(isInstalled: $monoInstalled,
+                                  shouldCheckInstallStatus: $shouldCheckInstallStatus,
+                                  name: "Mono (optional)")
             }
             .formStyle(.grouped)
             .scrollDisabled(true)
@@ -67,23 +104,27 @@ struct WelcomeView: View {
             }
             Spacer()
             HStack {
-                if let rosettaInstalled = rosettaInstalled,
-                   let whiskyWineInstalled = whiskyWineInstalled {
-                    if !rosettaInstalled || !whiskyWineInstalled {
-                        Button("setup.quit") {
+                if hasChecked {
+                    if !allInstalled {
+                        Button("Quit") {
                             exit(0)
                         }
                         .keyboardShortcut(.cancelAction)
                     }
                     Spacer()
-                    Button(rosettaInstalled && whiskyWineInstalled ? "setup.done" : "setup.next") {
-                        if !rosettaInstalled {
+                    Button(allInstalled ? "Done" : "Install") {
+                        if rosettaInstalled == false {
                             path.append(.rosetta)
                             return
                         }
 
-                        if !whiskyWineInstalled {
+                        if whiskyWineInstalled == false {
                             path.append(.whiskyWineDownload)
+                            return
+                        }
+
+                        if needsDependencyInstall {
+                            path.append(.dependencies)
                             return
                         }
 
@@ -93,12 +134,25 @@ struct WelcomeView: View {
                 }
             }
         }
-        .frame(width: 400, height: 200)
+        .frame(width: 400, height: 350)
     }
 
     func checkInstallStatus() {
+        let dm = DependencyManager.shared
         rosettaInstalled = Rosetta2.isRosettaInstalled
         whiskyWineInstalled = JackWineInstaller.isJackWineInstalled()
+        python3Installed = dm.isPython3Installed
+        steamCMDInstalled = SteamCMDService.shared.isInstalled
+
+        // Check pip packages in background (runs python)
+        Task.detached {
+            let pkgs = dm.checkPythonPackages()
+            let mono = dm.isMonoInstalled
+            await MainActor.run {
+                pythonPkgsInstalled = pkgs
+                monoInstalled = mono
+            }
+        }
     }
 }
 
@@ -107,25 +161,25 @@ struct InstallStatusView: View {
     @Binding var shouldCheckInstallStatus: Bool
     @State var showUninstall: Bool = false
     @State var name: String
-    @State var text: String = String(localized: "setup.install.checking")
+    @State var text: String = "Checking…"
 
     var body: some View {
         HStack {
             Group {
                 if let installed = isInstalled {
                     Circle()
-                        .foregroundColor(installed ? .green : .red)
+                        .foregroundColor(installed ? .green : (name.contains("optional") ? .yellow : .red))
                 } else {
                     ProgressView()
                         .controlSize(.small)
                 }
             }
             .frame(width: 10)
-            Text(String.init(format: text, name))
+            Text("\(name): \(text)")
             Spacer()
             if let installed = isInstalled {
                 if installed && showUninstall {
-                    Button("setup.uninstall") {
+                    Button("Uninstall") {
                         uninstall()
                     }
                 }
@@ -133,13 +187,9 @@ struct InstallStatusView: View {
         }
         .onChange(of: isInstalled) {
             if let installed = isInstalled {
-                if installed {
-                    text = String(localized: "setup.install.installed")
-                } else {
-                    text = String(localized: "setup.install.notInstalled")
-                }
+                text = installed ? "Installed" : "Not installed"
             } else {
-                text = String(localized: "setup.install.checking")
+                text = "Checking…"
             }
         }
     }

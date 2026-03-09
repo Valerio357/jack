@@ -1,2 +1,0 @@
-/Users/valeriodomenici/Code/jack/JackSteamBridge/publish/JackSteamBridge.pdb
-/Users/valeriodomenici/Code/jack/JackSteamBridge/publish/JackSteamBridge

@@ -72,12 +72,15 @@ struct ContentView: View {
                 showOnboarding = true
             }
 
-            // Check the actual wine64 binary — more reliable than the version plist
-        // which can be absent across different build/signing configurations.
-        let wineBin = JackWineInstaller.binFolder.appending(path: "wine64")
-        if !FileManager.default.fileExists(atPath: wineBin.path(percentEncoded: false)) {
-            showSetup = true
-        }
+            // Check all dependencies
+            let wineBin = JackWineInstaller.binFolder.appending(path: "wine64")
+            let dm = DependencyManager.shared
+            if !FileManager.default.fileExists(atPath: wineBin.path(percentEncoded: false))
+                || !dm.isPython3Installed
+                || !dm.checkPythonPackages()
+                || !SteamCMDService.shared.isInstalled {
+                showSetup = true
+            }
         }
     }
 

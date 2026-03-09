@@ -707,8 +707,14 @@ def cmd_login(username, password, twofa=None):
         return 0
 
     except urllib.error.HTTPError as e:
-        body = e.read().decode() if hasattr(e, 'read') else str(e)
-        output({"success": False, "error": f"HTTP {e.code}", "detail": body})
+        try:
+            body = e.read().decode('utf-8', errors='replace') if hasattr(e, 'read') else str(e)
+        except Exception:
+            body = str(e)
+        if e.code == 429:
+            output({"success": False, "error": "Rate limited. Please wait a few minutes and try again."})
+        else:
+            output({"success": False, "error": f"HTTP {e.code}", "detail": body})
         return 1
     except Exception as e:
         import traceback

@@ -239,7 +239,10 @@
       "Bash(pkill -x Jack 2>/dev/null; xcodebuild -scheme Jack -destination 'platform=macOS' build 2>&1 | grep -E '\\(error:|BUILD|warning:.*SteamAPI\\)' | head -20)",
       "Bash(pkill -x Jack 2>/dev/null; xcodebuild -scheme Jack -destination 'platform=macOS' -configuration Debug CODE_SIGN_IDENTITY=\"-\" CODE_SIGNING_REQUIRED=NO build 2>&1 | tail -3)",
       "Bash(pkill -x Jack 2>/dev/null; xcodebuild -scheme Jack -destination 'platform=macOS' -configuration Debug CODE_SIGN_IDENTITY=\"-\" CODE_SIGNING_REQUIRED=NO build 2>&1 | grep \"error:\" | head -10)",
-      "Bash(defaults read com.isaacmarovitz.Jack jackDataLocation 2>/dev/null || echo \"not set\")"
+      "Bash(defaults read com.isaacmarovitz.Jack jackDataLocation 2>/dev/null || echo \"not set\")",
+      "Bash(git commit -m \"$\\(cat <<'EOF'\nWork in progress: Steam bridge, cloud sync, and UI updates\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(pkill -x Jack 2>/dev/null; xcodebuild -scheme Jack -destination 'platform=macOS' -configuration Debug CODE_SIGN_IDENTITY=\"-\" CODE_SIGNING_REQUIRED=NO build 2>&1 | tail -5)",
+      "Bash(find /Users/valeriodomenici/Code/jack -type f -name \"*Wine*.swift\" -o -name \"*Installer*.swift\" 2>/dev/null | head -20)"
     ]
   }
 }
