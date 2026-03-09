@@ -27,10 +27,10 @@ struct RosettaView: View {
 
     var body: some View {
         VStack {
-            Text("setup.rosetta")
+            Text("Installing Rosetta")
                 .font(.title)
                 .fontWeight(.bold)
-            Text("setup.rosetta.subtitle")
+            Text("Rosetta 2 is required for x86_64 translation.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -51,7 +51,7 @@ struct RosettaView: View {
                                 .foregroundStyle(.red)
                                 .frame(width: 80, height: 80)
                                 .padding(.bottom, 20)
-                            Text("setup.rosetta.fail")
+                            Text("Failed to install Rosetta")
                                 .font(.subheadline)
                         }
                     }
@@ -60,12 +60,12 @@ struct RosettaView: View {
             Spacer()
             HStack {
                 if !successful {
-                    Button("setup.quit") {
+                    Button("Quit") {
                         exit(0)
                     }
                     .keyboardShortcut(.cancelAction)
                     Spacer()
-                    Button("setup.retry") {
+                    Button("Retry") {
                         installing = true
                         successful = true
 
@@ -112,7 +112,8 @@ struct RosettaView: View {
 
         let dm = DependencyManager.shared
         if !dm.isPython3Installed || !dm.checkPythonPackages()
-            || !SteamCMDService.shared.isInstalled {
+            || !SteamCMDService.shared.isInstalled
+            || !GPTKInstaller.shared.isInstalled {
             path.append(.dependencies)
             return
         }

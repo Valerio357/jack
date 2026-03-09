@@ -28,10 +28,10 @@ struct JackWineInstallView: View {
     var body: some View {
         VStack {
             VStack {
-                Text("setup.whiskywine.install")
+                Text("Installing Wine")
                     .font(.title)
                     .fontWeight(.bold)
-                Text("setup.whiskywine.install.subtitle")
+                Text("This may take a moment.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -66,7 +66,8 @@ struct JackWineInstallView: View {
     func proceed() {
         let dm = DependencyManager.shared
         if !dm.isPython3Installed || !dm.checkPythonPackages()
-            || !SteamCMDService.shared.isInstalled {
+            || !SteamCMDService.shared.isInstalled
+            || !GPTKInstaller.shared.isInstalled {
             path.append(.dependencies)
             return
         }

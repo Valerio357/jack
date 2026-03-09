@@ -84,33 +84,44 @@ public final class GPTKInstaller: @unchecked Sendable {
         }
 
         // 4. Find the Wine directory inside the extracted app bundle
-        let appBundle = extractDir.appending(path: "Game Porting Toolkit.app/Contents/Resources/wine")
-        guard fm.fileExists(atPath: appBundle.path(percentEncoded: false)) else {
+        let resourcesDir = extractDir.appending(path: "Game Porting Toolkit.app/Contents/Resources")
+        let wineDir = resourcesDir.appending(path: "wine")
+        guard fm.fileExists(atPath: wineDir.appending(path: "bin/wine64").path(percentEncoded: false)) else {
+            Self.log.error("GPTK wine64 not found at expected path: \(wineDir.path(percentEncoded: false))")
             throw GPTKError.invalidArchive
         }
 
         // 5. Install to GPTK directory
+        onProgress?("Installing GPTK...")
         let destDir = Self.gptkDir
         if fm.fileExists(atPath: destDir.path(percentEncoded: false)) {
             try fm.removeItem(at: destDir)
         }
-        try fm.createDirectory(at: destDir.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try fm.copyItem(at: appBundle.deletingLastPathComponent(), to: destDir)
+        let parentDir = destDir.deletingLastPathComponent()
+        if !fm.fileExists(atPath: parentDir.path(percentEncoded: false)) {
+            try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        }
+        try fm.copyItem(at: resourcesDir, to: destDir)
 
-        // 6. Make wine64 executable
+        // 6. Make wine binaries executable
         let chmod = Process()
         chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
-        chmod.arguments = ["+x",
-                           Self.wineBinary.path(percentEncoded: false),
-                           Self.wineserverBinary.path(percentEncoded: false)]
+        chmod.arguments = ["-R", "+x",
+                           destDir.appending(path: "wine/bin").path(percentEncoded: false)]
         try chmod.run()
         chmod.waitUntilExit()
 
-        // 7. Cleanup
+        // 7. Verify installation
+        guard fm.fileExists(atPath: Self.wineBinary.path(percentEncoded: false)) else {
+            Self.log.error("GPTK install verification failed: wine64 not at \(Self.wineBinary.path(percentEncoded: false))")
+            throw GPTKError.invalidArchive
+        }
+
+        // 8. Cleanup
         try? fm.removeItem(at: tempFile)
         try? fm.removeItem(at: extractDir)
 
-        Self.log.info("GPTK installed successfully")
+        Self.log.info("GPTK installed at \(destDir.path(percentEncoded: false))")
         onProgress?("GPTK installed successfully!")
     }
 
