@@ -1,0 +1,29 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "JackSteamBridge", "JackSteamBridge", "{EE920089-D594-A06A-5203-360C5ACC0B68}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "JackSteamBridge", "JackSteamBridge\JackSteamBridge\JackSteamBridge.csproj", "{876266F2-F6A5-E58B-A293-A2064C8E26A3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{876266F2-F6A5-E58B-A293-A2064C8E26A3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{876266F2-F6A5-E58B-A293-A2064C8E26A3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{876266F2-F6A5-E58B-A293-A2064C8E26A3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{876266F2-F6A5-E58B-A293-A2064C8E26A3}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{876266F2-F6A5-E58B-A293-A2064C8E26A3} = {EE920089-D594-A06A-5203-360C5ACC0B68}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {383D28B5-284F-4DBA-ACBB-C78DBCD76F73}
+	EndGlobalSection
+EndGlobal

@@ -123,17 +123,14 @@ private struct WelcomeStep: View {
     }
 }
 
-// MARK: - Step 2: Steam Login (username + password via SteamCMD)
+// MARK: - Step 2: Steam Login (detect running Steam session)
 
 private struct SteamLoginStep: View {
     let onNext: () -> Void
 
     @AppStorage("steamUserID") private var steamUserID = ""
     @AppStorage("steamUsername") private var steamUsername = ""
-    @State private var username = ""
-    @State private var password = ""
-    @State private var guardCode = ""
-    @State private var isTesting = false
+    @State private var isDetecting = false
     @State private var errorMessage: String?
     @State private var loginSuccess = false
 
@@ -146,56 +143,19 @@ private struct SteamLoginStep: View {
                 .foregroundStyle(Color.jackAccent)
 
             VStack(spacing: 8) {
-                Text("Sign in to Steam")
+                Text("Connect to Steam")
                     .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(.white)
-                Text("Enter your Steam credentials.\nJack uses them to download your games.")
+                Text("Make sure Steam is running and you're logged in.\nJack will detect your session automatically.")
                     .font(.jackBody)
                     .foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center)
             }
 
-            VStack(spacing: 12) {
-                TextField("Steam Username", text: $username)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color.jackCard)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .foregroundStyle(.white)
-                    .tint(Color.jackAccent)
-                    .textContentType(.username)
-
-                SecureField("Password", text: $password)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color.jackCard)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .foregroundStyle(.white)
-                    .tint(Color.jackAccent)
-                    .textContentType(.password)
-
-                TextField("Steam Guard Code (5 characters)", text: $guardCode)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color.jackCard)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .foregroundStyle(.white)
-                    .tint(Color.jackAccent)
-                    .textContentType(.oneTimeCode)
-            }
-
-            Text("Open Steam Mobile → Steam Guard → copy the 5-character code.")
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.4))
-                .multilineTextAlignment(.center)
-
-            if isTesting {
+            if isDetecting {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small).tint(Color.jackAccent)
-                    Text("Signing in…")
+                    Text("Detecting Steam session…")
                         .font(.jackCaption)
                         .foregroundStyle(.white.opacity(0.6))
                 }
@@ -209,7 +169,7 @@ private struct SteamLoginStep: View {
             }
 
             if loginSuccess {
-                Label("Login successful!", systemImage: "checkmark.circle.fill")
+                Label("Connected!", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(Color.jackSuccess)
                     .font(.jackCaption)
             }
@@ -218,48 +178,47 @@ private struct SteamLoginStep: View {
 
             HStack(spacing: 12) {
                 OnboardingButton(label: "Skip", isPrimary: false) {
-                    if !username.isEmpty {
-                        steamUsername = username
-                    }
                     onNext()
                 }
 
-                OnboardingButton(label: "Sign In", isPrimary: true) {
-                    doLogin()
+                OnboardingButton(label: "Detect Steam", isPrimary: true) {
+                    detectSteam()
                 }
-                .disabled(username.isEmpty || password.isEmpty || guardCode.isEmpty || isTesting)
+                .disabled(isDetecting)
             }
         }
         .padding(40)
-        .onAppear {
-            username = steamUsername
-        }
     }
 
-    private func doLogin() {
-        isTesting = true
+    private func detectSteam() {
+        isDetecting = true
         errorMessage = nil
         loginSuccess = false
 
         Task {
+            let running = await SteamNativeService.shared.isSteamRunning()
+            if !running {
+                NSWorkspace.shared.open(URL(string: "steam://")!)
+                try? await Task.sleep(for: .seconds(4))
+            }
+
             do {
-                try await SteamCMDService.shared.ensureInstalled()
-                let result = try await SteamCMDService.shared.login(
-                    username: username,
-                    password: password,
-                    steamGuardCode: guardCode
-                )
-                steamUsername = username
-                if !result.steamID64.isEmpty {
-                    steamUserID = result.steamID64
-                }
+                let (steamID, name) = try await SteamNativeService.shared.getCurrentUser()
+                SteamSessionManager.shared.saveSession(result: SteamLoginResult(
+                    steamID64: steamID,
+                    accessToken: "",
+                    refreshToken: "",
+                    accountName: name
+                ))
+                steamUserID = steamID
+                steamUsername = name.isEmpty ? steamUsername : name
                 loginSuccess = true
                 try? await Task.sleep(for: .seconds(1))
                 onNext()
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = "Steam is not running or not logged in.\nOpen Steam and sign in, then try again."
             }
-            isTesting = false
+            isDetecting = false
         }
     }
 }

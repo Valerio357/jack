@@ -23,14 +23,15 @@ public final class SteamSessionManager: @unchecked Sendable {
     private static let log = Logger(subsystem: "com.isaacmarovitz.Jack", category: "SteamSession")
     private static let keychainService = "com.isaacmarovitz.Jack.SteamSession"
     private static let keychainAccount = "refreshToken"
+    private static let keychainPasswordAccount = "steamPassword"
 
     // In-memory state
     private(set) public var steamID64: String = ""
     private(set) public var accountName: String = ""
     private(set) public var accessToken: String = ""
-    private var refreshToken: String = ""
+    private(set) public var refreshToken: String = ""
 
-    public var isLoggedIn: Bool { !steamID64.isEmpty && !refreshToken.isEmpty }
+    public var isLoggedIn: Bool { !steamID64.isEmpty }
 
     private init() {
         loadSession()
@@ -48,6 +49,7 @@ public final class SteamSessionManager: @unchecked Sendable {
         // Store in UserDefaults (non-sensitive)
         UserDefaults.standard.set(result.steamID64, forKey: "steamUserID")
         UserDefaults.standard.set(result.accountName, forKey: "steamUsername")
+        UserDefaults.standard.set(result.accessToken, forKey: "steamAccessToken")
 
         // Store refresh token in Keychain
         saveToKeychain(result.refreshToken)
@@ -59,14 +61,51 @@ public final class SteamSessionManager: @unchecked Sendable {
     private func loadSession() {
         steamID64 = UserDefaults.standard.string(forKey: "steamUserID") ?? ""
         accountName = UserDefaults.standard.string(forKey: "steamUsername") ?? ""
+        accessToken = UserDefaults.standard.string(forKey: "steamAccessToken") ?? ""
         refreshToken = loadFromKeychain() ?? ""
+
+        // Fallback: load from jacksteam session.json if Keychain is empty
+        if refreshToken.isEmpty {
+            loadFromSessionJSON()
+        }
 
         if !refreshToken.isEmpty {
             // Decode steamID from refresh token if not stored
             if steamID64.isEmpty, let sid = Self.extractSteamID(from: refreshToken) {
                 steamID64 = sid
+                UserDefaults.standard.set(sid, forKey: "steamUserID")
             }
             Self.log.info("Session loaded for \(self.accountName) (\(self.steamID64))")
+        }
+    }
+
+    /// Try loading session from jacksteam.py's session.json file.
+    private func loadFromSessionJSON() {
+        let sessionDir = FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: "Library/Application Support/com.isaacmarovitz.Jack/SteamSession")
+        let sessionFile = sessionDir.appending(path: "session.json")
+
+        guard let data = try? Data(contentsOf: sessionFile),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+        let rt = json["refreshToken"] as? String ?? ""
+        guard !rt.isEmpty else { return }
+
+        Self.log.info("Loading session from jacksteam session.json")
+        refreshToken = rt
+        saveToKeychain(rt)
+
+        if let sid = json["steamID64"] as? String, !sid.isEmpty, steamID64.isEmpty {
+            steamID64 = sid
+            UserDefaults.standard.set(sid, forKey: "steamUserID")
+        }
+        if let name = json["accountName"] as? String, !name.isEmpty, accountName.isEmpty {
+            accountName = name
+            UserDefaults.standard.set(name, forKey: "steamUsername")
+        }
+        if let at = json["accessToken"] as? String, !at.isEmpty, accessToken.isEmpty {
+            accessToken = at
+            UserDefaults.standard.set(at, forKey: "steamAccessToken")
         }
     }
 
@@ -79,6 +118,7 @@ public final class SteamSessionManager: @unchecked Sendable {
 
         UserDefaults.standard.removeObject(forKey: "steamUserID")
         UserDefaults.standard.removeObject(forKey: "steamUsername")
+        UserDefaults.standard.removeObject(forKey: "steamAccessToken")
         deleteFromKeychain()
 
         Self.log.info("Session cleared")
@@ -98,32 +138,64 @@ public final class SteamSessionManager: @unchecked Sendable {
         )
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = "refresh_token=\(refreshToken)&steamid=\(steamID64)"
+
+        // Form-encode the refresh token (JWT with base64url chars)
+        var formChars = CharacterSet.alphanumerics
+        formChars.insert(charactersIn: "-._~")
+        let encodedRT = refreshToken.addingPercentEncoding(withAllowedCharacters: formChars) ?? refreshToken
+        request.httpBody = "refresh_token=\(encodedRT)&steamid=\(steamID64)"
             .data(using: .utf8)
 
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        // Log HTTP status for debugging
+        if let httpResp = response as? HTTPURLResponse, httpResp.statusCode != 200 {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            Self.log.error("Token refresh HTTP \(httpResp.statusCode): \(body)")
+            throw SteamSessionError.sessionExpired
+        }
+
         let resp = try JSONDecoder().decode(RefreshResponse.self, from: data)
 
         if let token = resp.response?.access_token, !token.isEmpty {
             self.accessToken = token
+            UserDefaults.standard.set(token, forKey: "steamAccessToken")
             Self.log.info("Access token refreshed")
         } else {
-            // Refresh token expired — user needs to login again
-            logout()
+            let body = String(data: data, encoding: .utf8) ?? ""
+            Self.log.error("Token refresh empty response: \(body)")
+            // Do NOT logout — just report the error so user doesn't lose session
             throw SteamSessionError.sessionExpired
         }
     }
 
-    /// Get a valid access token, refreshing if needed.
-    public func getAccessToken() async throws -> String {
-        if !accessToken.isEmpty {
-            // Check if JWT is still valid (not expired)
+    /// Get a valid access token, refreshing if needed via Web API.
+    public func getAccessToken(forceRefresh: Bool = false) async throws -> String {
+        if !forceRefresh, !accessToken.isEmpty {
             if !isTokenExpired(accessToken) {
                 return accessToken
             }
         }
+
         try await refreshAccessToken()
         return accessToken
+    }
+
+    /// Sync session state from the running Steam client.
+    /// Call this at app launch to detect the logged-in user.
+    public func syncFromSteamClient() async {
+        do {
+            let (steamID, name) = try await SteamNativeService.shared.getCurrentUser()
+            if steamID64 != steamID || accountName != name {
+                steamID64 = steamID
+                if !name.isEmpty { accountName = name }
+                UserDefaults.standard.set(steamID, forKey: "steamUserID")
+                if !name.isEmpty { UserDefaults.standard.set(name, forKey: "steamUsername") }
+                Self.log.info("Session synced from Steam client: \(name) (\(steamID))")
+            }
+        } catch {
+            Self.log.info("Could not sync from Steam client: \(error.localizedDescription)")
+        }
     }
 
     private func isTokenExpired(_ jwt: String) -> Bool {
@@ -185,10 +257,45 @@ public final class SteamSessionManager: @unchecked Sendable {
     }
 
     private func deleteFromKeychain() {
+        deleteKeychainItem(account: Self.keychainAccount)
+        deleteKeychainItem(account: Self.keychainPasswordAccount)
+    }
+
+    // MARK: - Steam password (for SteamCMD)
+
+    /// Save Steam password in Keychain for SteamCMD use.
+    public func savePassword(_ password: String) {
+        deleteKeychainItem(account: Self.keychainPasswordAccount)
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: Self.keychainService,
-            kSecAttrAccount: Self.keychainAccount,
+            kSecAttrAccount: Self.keychainPasswordAccount,
+            kSecValueData: password.data(using: .utf8)!,
+            kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        ]
+        SecItemAdd(query as CFDictionary, nil)
+    }
+
+    /// Load Steam password from Keychain.
+    public var storedPassword: String? {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: Self.keychainService,
+            kSecAttrAccount: Self.keychainPasswordAccount,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func deleteKeychainItem(account: String) {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: Self.keychainService,
+            kSecAttrAccount: account,
         ]
         SecItemDelete(query as CFDictionary)
     }

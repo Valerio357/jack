@@ -74,8 +74,8 @@ struct ContentView: View {
 
             // Check the actual wine64 binary — more reliable than the version plist
         // which can be absent across different build/signing configurations.
-        let wine64 = JackWineInstaller.binFolder.appending(path: "wine64")
-        if !FileManager.default.fileExists(atPath: wine64.path(percentEncoded: false)) {
+        let wineBin = JackWineInstaller.binFolder.appending(path: "wine64")
+        if !FileManager.default.fileExists(atPath: wineBin.path(percentEncoded: false)) {
             showSetup = true
         }
         }

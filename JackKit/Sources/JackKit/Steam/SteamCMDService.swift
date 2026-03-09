@@ -267,13 +267,18 @@ public final class SteamCMDService: @unchecked Sendable {
             try fileManager.createDirectory(at: installDir, withIntermediateDirectories: true)
         }
 
-        let steamArgs: [String] = [
+        var steamArgs: [String] = [
             "+@sSteamCmdForcePlatformType", "windows",
             "+force_install_dir", installDir.path(percentEncoded: false),
             "+login", username,
-            "+app_update", "\(appID)", "validate",
-            "+quit"
         ]
+
+        // If we have a stored password, pass it so SteamCMD doesn't need cached credentials
+        if let pw = SteamSessionManager.shared.storedPassword, !pw.isEmpty {
+            steamArgs.append(pw)
+        }
+
+        steamArgs += ["+app_update", "\(appID)", "validate", "+quit"]
 
         // 4-hour timeout for large game downloads (e.g. 100+ GB)
         let (exitCode, fullOutput) = try await runSteamCMD(
@@ -320,6 +325,9 @@ public final class SteamCMDService: @unchecked Sendable {
         var candidates: [(url: URL, size: Int)] = []
 
         for case let fileURL as URL in enumerator {
+            // Skip files inside steamapps/downloading/ — those are incomplete downloads
+            let filePath = fileURL.path(percentEncoded: false)
+            if filePath.contains("/steamapps/downloading/") { continue }
             guard fileURL.pathExtension.lowercased() == "exe" else { continue }
             let name = fileURL.lastPathComponent.lowercased()
             if excludePatterns.contains(where: { name.contains($0) }) { continue }
@@ -342,8 +350,7 @@ public final class SteamCMDService: @unchecked Sendable {
         "Two-factor code:",      // prompt for 2FA code
         "two-factor code:",
         "Enter the current code", // another prompt variant
-        "password:",             // password prompt
-        "Cached credentials not found"
+        "password:",             // password prompt (only appears when no password on CLI)
     ]
 
     private func runSteamCMD(

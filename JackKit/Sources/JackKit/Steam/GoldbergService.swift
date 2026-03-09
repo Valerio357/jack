@@ -195,13 +195,82 @@ public final class GoldbergService: @unchecked Sendable {
                 try fm.copyItem(at: goldbergDLL, to: target)
             }
 
+            // Generate steam_interfaces.txt from original DLL backup
+            // Required for some Unity games (CSteamworks) where auto-detection fails
+            Self.generateSteamInterfaces(in: dir, settingsDir: settingsDir)
+
             // Clean up gbe_fork artifacts if switching from gbe_fork
             for file in ["configs.main.ini", "configs.user.ini", "configs.app.ini",
-                         "configs.overlay.ini", "steam_interfaces.txt"] {
+                         "configs.overlay.ini"] {
                 try? fm.removeItem(at: settingsDir.appending(path: file))
             }
             try? fm.removeItem(at: dir.appending(path: "EMU_MISSING_INTERFACE.txt"))
         }
+    }
+
+    /// Extract Steam interface version strings from an original DLL backup.
+    /// Writes `steam_interfaces.txt` so Goldberg knows which interface versions to expose.
+    private static func generateSteamInterfaces(in dir: URL, settingsDir: URL) {
+        let fm = FileManager.default
+        let interfacesFile = settingsDir.appending(path: "steam_interfaces.txt")
+
+        // Find the original DLL backup to extract interfaces from
+        var backupPath: URL?
+        for name in ["steam_api64.dll.original_jack", "steam_api.dll.original_jack"] {
+            let candidate = dir.appending(path: name)
+            if fm.fileExists(atPath: candidate.path(percentEncoded: false)) {
+                // Verify it's actually the original (not a Goldberg copy)
+                if let attrs = try? fm.attributesOfItem(atPath: candidate.path(percentEncoded: false)),
+                   let size = attrs[.size] as? Int, size < 1_000_000 {
+                    backupPath = candidate
+                    break
+                }
+            }
+        }
+
+        guard let backup = backupPath,
+              let dllData = try? Data(contentsOf: backup) else { return }
+
+        // Known Steamworks interface name patterns with version suffixes
+        let interfacePatterns = [
+            "SteamClient", "SteamUser", "SteamFriends", "SteamUtils",
+            "SteamMatchMaking", "SteamMatchMakingServers",
+            "SteamUserStats", "STEAMUSERSTATS_INTERFACE_VERSION",
+            "SteamApps", "STEAMAPPS_INTERFACE_VERSION",
+            "SteamNetworking", "SteamRemoteStorage",
+            "STEAMREMOTESTORAGE_INTERFACE_VERSION",
+            "SteamScreenshots", "STEAMSCREENSHOTS_INTERFACE_VERSION",
+            "SteamHTTP", "STEAMHTTP_INTERFACE_VERSION",
+            "SteamController", "SteamUGC", "STEAMUGC_INTERFACE_VERSION",
+            "SteamMusic", "SteamMusicRemote",
+            "SteamHTMLSurface", "STEAMHTMLSURFACE_INTERFACE_VERSION",
+            "SteamInventory", "STEAMINVENTORY_INTERFACE_VERSION",
+            "SteamVideo", "SteamParentalSettings",
+            "SteamInput", "SteamNetworkingSockets",
+            "SteamNetworkingMessages", "SteamNetworkingUtils",
+        ]
+
+        // Scan DLL binary for ASCII strings matching interface patterns with version numbers
+        var interfaces: [String] = []
+        if let content = String(data: dllData, encoding: .ascii) {
+            for pattern in interfacePatterns {
+                // Match pattern followed by digits (e.g., SteamClient017, STEAMAPPS_INTERFACE_VERSION007)
+                let regex = try? NSRegularExpression(pattern: "\(NSRegularExpression.escapedPattern(for: pattern))\\d{3}")
+                let range = NSRange(content.startIndex..., in: content)
+                if let match = regex?.firstMatch(in: content, range: range),
+                   let matchRange = Range(match.range, in: content) {
+                    let interfaceName = String(content[matchRange])
+                    if !interfaces.contains(interfaceName) {
+                        interfaces.append(interfaceName)
+                    }
+                }
+            }
+        }
+
+        guard !interfaces.isEmpty else { return }
+
+        let text = interfaces.joined(separator: "\n") + "\n"
+        try? text.write(to: interfacesFile, atomically: true, encoding: .utf8)
     }
 
     /// Restore original steam_api*.dll and remove steam_settings/ from the entire game tree.

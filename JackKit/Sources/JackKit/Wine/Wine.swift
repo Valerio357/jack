@@ -22,7 +22,7 @@ import os.log
 public class Wine {
     /// URL to the installed `DXVK` folder
     private static let dxvkFolder: URL = JackWineInstaller.libraryFolder.appending(path: "DXVK")
-    /// Path to the `wine64` binary
+    /// Path to the `wine64` binary (wine-crossover)
     public static let wineBinary: URL = JackWineInstaller.binFolder.appending(path: "wine64")
     /// Parth to the `wineserver` binary
     private static let wineserverBinary: URL = JackWineInstaller.binFolder.appending(path: "wineserver")
@@ -231,10 +231,14 @@ public class Wine {
     private static func constructWineEnvironment(
         for bottle: Bottle, environment: [String: String] = [:]
     ) -> [String: String] {
+        let wineLibDir = JackWineInstaller.libraryFolder
+            .appending(path: "Wine").appending(path: "lib")
+        let externalDir = wineLibDir.appending(path: "external")
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "fixme-all",
-            "GST_DEBUG": "1"
+            "GST_DEBUG": "1",
+            "DYLD_FALLBACK_LIBRARY_PATH": "\(wineLibDir.path(percentEncoded: false)):\(externalDir.path(percentEncoded: false))"
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
         guard !environment.isEmpty else { return result }

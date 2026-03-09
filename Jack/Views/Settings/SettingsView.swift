@@ -28,15 +28,24 @@ struct SettingsView: View {
     @AppStorage("steamUsername") var steamUsername = ""
     @Environment(\.dismiss) var dismiss
 
-    @State private var steamPassword = ""
-    @State private var steamGuardCode = ""
-    @State private var loginStatus: LoginTestStatus = .idle
-    @State private var loginStatusText = ""
-    @State private var guardType: SteamGuardType?
+    // Steam Cloud login (jacksteam.py)
+    @State private var cloudUsername = ""
+    @State private var cloudPassword = ""
+    @State private var cloudGuardCode = ""
+    @State private var cloudStatus: LoginStatus = .idle
+    @State private var showCloudLogin = false
+
+    // SteamCMD login
+    @State private var cmdUsername = ""
+    @State private var cmdPassword = ""
+    @State private var cmdGuardCode = ""
+    @State private var cmdStatus: LoginStatus = .idle
+    @State private var showCmdLogin = false
     @State private var steamCMDInstalled = SteamCMDService.shared.isInstalled
+    @State private var cmdCredentialsCached = false
     @State private var isInstallingCMD = false
 
-    enum LoginTestStatus: Equatable {
+    enum LoginStatus: Equatable {
         case idle
         case testing
         case success
@@ -46,7 +55,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("settings.general") {
+                Section("General") {
                     Toggle("Terminate Wine processes when Jack closes", isOn: $killOnTerminate)
                     ActionView(
                         text: "Jack data location",
@@ -78,77 +87,62 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Section("settings.updates") {
+                Section("Updates") {
                     Toggle("Automatically check for Jack updates", isOn: $whiskyUpdate)
                     Toggle("Automatically check for JackWine updates", isOn: $checkJackWineUpdates)
                 }
-                Section("Steam") {
+
+                // MARK: - Steam Cloud (jacksteam.py — library, cloud sync)
+                Section("Steam Account") {
                     if steamUserID.isEmpty {
                         Text("Not connected")
                             .foregroundStyle(.secondary)
                     } else {
                         LabeledContent("Steam ID", value: steamUserID)
                         if !steamUsername.isEmpty {
-                            LabeledContent("Account", value: steamUsername)
+                            LabeledContent("Username", value: steamUsername)
                         }
+                        Label("Connected", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(Color.jackSuccess)
+                            .font(.caption)
                     }
 
-                    if steamUserID.isEmpty || loginStatus == .failed("") || loginStatus != .idle {
-                        TextField("Steam Username", text: $steamUsername)
-                            .textContentType(.username)
-
-                        SecureField("Password", text: $steamPassword)
-                            .textContentType(.password)
-
-                        if guardType != nil {
-                            TextField("Steam Guard Code", text: $steamGuardCode)
-                                .textContentType(.oneTimeCode)
-                        }
-                    }
-
-                    HStack {
-                        if steamUserID.isEmpty {
-                            Button("Sign In") {
-                                nativeLogin()
-                            }
-                            .disabled(steamUsername.isEmpty || steamPassword.isEmpty || loginStatus == .testing)
-                        }
-
-                        Spacer()
-
-                        switch loginStatus {
-                        case .idle:
-                            EmptyView()
-                        case .testing:
-                            ProgressView().controlSize(.small)
-                            Text(loginStatusText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        case .success:
-                            Label("OK", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(Color.jackSuccess)
-                                .font(.caption)
-                        case .failed(let msg):
-                            Text(msg)
-                                .foregroundStyle(.red)
-                                .font(.caption)
-                                .lineLimit(3)
-                        }
+                    if steamUserID.isEmpty || showCloudLogin {
+                        loginForm(
+                            username: $cloudUsername,
+                            password: $cloudPassword,
+                            guardCode: $cloudGuardCode,
+                            status: cloudStatus,
+                            action: cloudLogin,
+                            label: "Sign In"
+                        )
                     }
 
                     if !steamUserID.isEmpty {
-                        Button("Disconnect account") {
-                            SteamSessionManager.shared.logout()
-                            steamUserID = ""
-                            steamUsername = ""
+                        HStack {
+                            Button("Reconnect") {
+                                showCloudLogin.toggle()
+                                cloudUsername = steamUsername
+                                cloudStatus = .idle
+                            }
+                            Spacer()
+                            Button("Disconnect") {
+                                SteamSessionManager.shared.logout()
+                                steamUserID = ""
+                                steamUsername = ""
+                                showCloudLogin = false
+                                cloudStatus = .idle
+                            }
+                            .foregroundStyle(.red)
                         }
-                        .foregroundStyle(.red)
                     }
 
-                    Text("Native Steam login. No Wine needed for authentication.")
+                    Text("Used for game library, cloud saves, and online features.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                // MARK: - SteamCMD (game downloads)
                 Section("SteamCMD") {
                     HStack {
                         Text("Status")
@@ -170,6 +164,45 @@ struct SettingsView: View {
                             .buttonStyle(.bordered)
                         }
                     }
+
+                    if steamCMDInstalled {
+                        HStack {
+                            Text("Credentials")
+                            Spacer()
+                            if cmdCredentialsCached {
+                                Label("Cached", systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(Color.jackSuccess)
+                                    .font(.caption)
+                            } else {
+                                Text("Not cached")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if !cmdCredentialsCached || showCmdLogin {
+                            loginForm(
+                                username: $cmdUsername,
+                                password: $cmdPassword,
+                                guardCode: $cmdGuardCode,
+                                status: cmdStatus,
+                                action: cmdLogin,
+                                label: "Cache Credentials"
+                            )
+                        }
+
+                        if cmdCredentialsCached {
+                            Button("Re-authenticate") {
+                                showCmdLogin.toggle()
+                                cmdUsername = steamUsername.isEmpty ? cloudUsername : steamUsername
+                                cmdStatus = .idle
+                            }
+                        }
+                    }
+
+                    Text("Used for downloading games. Login once to cache credentials.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -182,8 +215,67 @@ struct SettingsView: View {
                 }
             }
         }
-        .frame(width: 450, height: 550)
+        .frame(width: 450, height: 700)
+        .onAppear {
+            checkCmdCredentials()
+        }
     }
+
+    // MARK: - Shared login form
+
+    @ViewBuilder
+    private func loginForm(
+        username: Binding<String>,
+        password: Binding<String>,
+        guardCode: Binding<String>,
+        status: LoginStatus,
+        action: @escaping () -> Void,
+        label: String
+    ) -> some View {
+        VStack(spacing: 8) {
+            TextField("Username", text: username)
+                .textFieldStyle(.roundedBorder)
+                .textContentType(.username)
+
+            SecureField("Password", text: password)
+                .textFieldStyle(.roundedBorder)
+                .textContentType(.password)
+
+            TextField("Steam Guard Code", text: guardCode)
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Button(label) {
+                    action()
+                }
+                .disabled(status == .testing
+                          || username.wrappedValue.isEmpty
+                          || password.wrappedValue.isEmpty)
+                .buttonStyle(.borderedProminent)
+
+                Spacer()
+
+                switch status {
+                case .idle:
+                    EmptyView()
+                case .testing:
+                    ProgressView().controlSize(.small)
+                case .success:
+                    Label("OK", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(Color.jackSuccess)
+                        .font(.caption)
+                case .failed(let msg):
+                    Text(msg)
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                        .lineLimit(3)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Actions
 
     private func installSteamCMD() {
         isInstallingCMD = true
@@ -192,76 +284,101 @@ struct SettingsView: View {
                 try await SteamCMDService.shared.ensureInstalled()
                 steamCMDInstalled = true
             } catch {
-                loginStatus = .failed(error.localizedDescription)
+                cmdStatus = .failed(error.localizedDescription)
             }
             isInstallingCMD = false
         }
     }
 
-    private func nativeLogin() {
-        loginStatus = .testing
-        loginStatusText = "Connecting…"
-        let username = steamUsername
-        let password = steamPassword
-        let code = steamGuardCode
+    private func checkCmdCredentials() {
+        // Quick check: try SteamCMD login with just username (cached creds)
+        guard steamCMDInstalled, !steamUsername.isEmpty else { return }
+        Task {
+            do {
+                _ = try await SteamCMDService.shared.login(username: steamUsername)
+                cmdCredentialsCached = true
+            } catch {
+                cmdCredentialsCached = false
+            }
+        }
+    }
+
+    // MARK: - Steam Cloud login (jacksteam.py)
+
+    private func cloudLogin() {
+        cloudStatus = .testing
+        let user = cloudUsername
+        let pw = cloudPassword
+        let code = cloudGuardCode
 
         Task {
             do {
-                let auth = SteamNativeAuth.shared
+                let result = try await SteamNativeService.shared.login(
+                    username: user,
+                    password: pw,
+                    twoFactorCode: code.isEmpty ? nil : code
+                )
 
-                // If we have a guard code, submit it first
-                if let gt = guardType, !code.isEmpty {
-                    loginStatusText = "Submitting Steam Guard code…"
-                    try await auth.submitGuardCode(code, type: gt)
-                    steamGuardCode = ""
-                }
-
-                // Begin login if no pending session
-                if guardType == nil {
-                    loginStatusText = "Authenticating…"
-                    let gt = try await auth.beginLogin(accountName: username, password: password)
-                    guardType = gt
-
-                    switch gt {
-                    case .none:
-                        break // No guard needed
-                    case .deviceConfirmation:
-                        loginStatusText = "Approve on your Steam mobile app…"
-                    case .deviceCode:
-                        loginStatusText = "Enter authenticator code"
-                        loginStatus = .failed("Enter your Steam Guard code and press Sign In again.")
-                        return
-                    case .emailCode(let domain):
-                        loginStatusText = "Enter code from email (\(domain))"
-                        loginStatus = .failed("Enter the code sent to \(domain) and press Sign In again.")
-                        return
-                    case .emailConfirmation(let domain):
-                        loginStatusText = "Confirm via email (\(domain))…"
-                    }
-                }
-
-                // Poll for result
-                loginStatusText = "Waiting for approval…"
-                let result = try await auth.pollForResult()
-
-                // Save session
                 SteamSessionManager.shared.saveSession(result: result)
+                SteamSessionManager.shared.savePassword(pw)
                 steamUserID = result.steamID64
-                steamUsername = result.accountName.isEmpty ? username : result.accountName
+                steamUsername = result.accountName.isEmpty ? user : result.accountName
 
-                // Also install SteamCMD for game downloads
-                try? await SteamCMDService.shared.ensureInstalled()
-                steamCMDInstalled = SteamCMDService.shared.isInstalled
+                cloudStatus = .success
+                showCloudLogin = false
+                cloudPassword = ""
+                cloudGuardCode = ""
 
-                loginStatus = .success
-                steamPassword = ""
-                steamGuardCode = ""
-                guardType = nil
-                loginStatusText = ""
+                // Pre-fill SteamCMD username
+                if cmdUsername.isEmpty {
+                    cmdUsername = steamUsername
+                }
+            } catch let error as SteamNativeService.SteamNativeError {
+                switch error {
+                case .loginFailed(let msg):
+                    if msg.contains("2FA") || msg.contains("code required") {
+                        cloudStatus = .failed("Enter your Steam Guard code and try again.")
+                    } else {
+                        cloudStatus = .failed(msg)
+                    }
+                default:
+                    cloudStatus = .failed(error.localizedDescription)
+                }
             } catch {
-                guardType = nil
-                loginStatus = .failed(error.localizedDescription)
-                loginStatusText = ""
+                cloudStatus = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    // MARK: - SteamCMD login
+
+    private func cmdLogin() {
+        cmdStatus = .testing
+        let user = cmdUsername
+        let pw = cmdPassword
+        let code = cmdGuardCode
+
+        Task {
+            do {
+                try await SteamCMDService.shared.ensureInstalled()
+                _ = try await SteamCMDService.shared.login(
+                    username: user,
+                    password: pw,
+                    steamGuardCode: code.isEmpty ? nil : code
+                )
+
+                cmdStatus = .success
+                cmdCredentialsCached = true
+                showCmdLogin = false
+                cmdPassword = ""
+                cmdGuardCode = ""
+
+                // Also save password as fallback
+                SteamSessionManager.shared.savePassword(pw)
+            } catch let error as SteamCMDError {
+                cmdStatus = .failed(error.localizedDescription)
+            } catch {
+                cmdStatus = .failed(error.localizedDescription)
             }
         }
     }

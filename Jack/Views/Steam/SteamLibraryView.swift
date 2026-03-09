@@ -73,8 +73,8 @@ final class SteamLibraryViewModel: ObservableObject {
     }
 
     func loadGames(steamID64: String, username: String) async {
-        guard !username.isEmpty else {
-            errorMessage = "Configure your Steam credentials in Settings."
+        guard !steamID64.isEmpty else {
+            errorMessage = "Connect your Steam account in Settings."
             return
         }
 
@@ -391,6 +391,7 @@ struct GameDetailPanel: View {
     @AppStorage("steamUserID") private var steamUserID = ""
     @State private var launchError: String?
     @State private var windowedMode: Bool = false
+    @State private var goldbergEnabled: Bool = false
     @State private var showUninstallConfirm: Bool = false
     @State private var backupStatus: String? = nil
     @State private var cloudSyncStatus: String? = nil
@@ -484,16 +485,22 @@ struct GameDetailPanel: View {
                                     UserDefaults.standard.set(v, forKey: "windowed_\(game.appid)")
                                 }
 
-                                HStack(spacing: 6) {
-                                    Image(systemName: "shield.checkered")
-                                        .foregroundStyle(Color.jackAccent)
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text("Native Steam DRM")
-                                            .font(.system(size: 12, weight: .medium))
-                                        Text("Steam client runs in the background to authenticate games automatically.")
-                                            .font(.system(size: 10))
-                                            .foregroundStyle(.white.opacity(0.3))
+                                Toggle(isOn: $goldbergEnabled) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "shield.checkered")
+                                            .foregroundStyle(Color.jackAccent)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text("Run without Steam")
+                                                .font(.system(size: 12, weight: .medium))
+                                            Text("For games that require Steam DRM. Emulates steam_api locally.")
+                                                .font(.system(size: 10))
+                                                .foregroundStyle(.white.opacity(0.3))
+                                        }
                                     }
+                                }
+                                .toggleStyle(.switch).tint(Color.jackAccent)
+                                .onChange(of: goldbergEnabled) { _, newValue in
+                                    UserDefaults.standard.set(newValue, forKey: "goldberg_\(game.appid)")
                                 }
                             }
                         }
@@ -536,6 +543,7 @@ struct GameDetailPanel: View {
         }
         .onAppear {
             windowedMode = UserDefaults.standard.bool(forKey: "windowed_\(game.appid)")
+            goldbergEnabled = UserDefaults.standard.bool(forKey: "goldberg_\(game.appid)")
             // Migrate: restore any Goldberg-modified games from previous versions
             if UserDefaults.standard.bool(forKey: "goldberg_\(game.appid)") {
                 let gameDir = SteamCMDService.gameInstallDir(appID: game.appid)
@@ -622,10 +630,9 @@ struct GameDetailPanel: View {
     // MARK: - Saves card
 
     private var savesCard: some View {
-        let cloudCount = SteamCloudSyncService.shared.cloudSaveFileCount(
-            appID: game.appid, steamID: steamUserID, bottle: bottle
-        )
-        let steamInstalled = SteamCloudSyncService.shared.isSteamInstalled(in: bottle)
+        let goldbergDir = SteamCloudWebAPI.goldbergSaveDir(bottle: bottle, appID: game.appid)
+        let cloudCount = Self.countFiles(in: goldbergDir)
+        let hasSession = SteamSessionManager.shared.isLoggedIn
 
         return DetailCard {
             VStack(alignment: .leading, spacing: 12) {
@@ -634,14 +641,13 @@ struct GameDetailPanel: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white.opacity(0.35))
                     Spacer()
-                    // Steam Cloud indicator
-                    if steamInstalled {
+                    if hasSession {
                         Label(cloudCount > 0 ? "\(cloudCount) cloud saves" : "Steam Cloud",
                               systemImage: "checkmark.icloud")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(cloudCount > 0 ? Color.jackSuccess : .white.opacity(0.3))
                     } else {
-                        Label("Steam not installed in Wine", systemImage: "xmark.icloud")
+                        Label("Sign in to sync cloud saves", systemImage: "xmark.icloud")
                             .font(.system(size: 10))
                             .foregroundStyle(.white.opacity(0.25))
                     }
@@ -670,7 +676,7 @@ struct GameDetailPanel: View {
 
                 // Sync buttons
                 HStack(spacing: 8) {
-                    if steamInstalled {
+                    if hasSession {
                         Button {
                             manualSyncFromCloud()
                         } label: {
@@ -715,8 +721,8 @@ struct GameDetailPanel: View {
                     Text(backup).font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                 }
 
-                if !steamInstalled {
-                    Text("Install Steam in Wine to enable cloud save sync.")
+                if !SteamSessionManager.shared.isLoggedIn {
+                    Text("Sign in to Steam in Settings to enable cloud save sync.")
                         .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.3))
                 }
@@ -725,19 +731,19 @@ struct GameDetailPanel: View {
     }
 
     private func manualSyncFromCloud() {
-        let syncID = steamUserID
         let syncAppID = game.appid
         let syncBottle = bottle
         cloudSyncStatus = "Syncing from Steam Cloud..."
         Task {
             do {
-                let result = try await SteamCloudSyncService.shared.syncFromCloud(
-                    appID: syncAppID, steamID: syncID, bottle: syncBottle
-                ) { status in
-                    Task { @MainActor in cloudSyncStatus = status }
-                }
-                cloudSyncStatus = result.fileCount > 0
-                    ? "Imported \(result.fileCount) files from Steam Cloud"
+                let saveDir = SteamCloudWebAPI.goldbergSaveDir(bottle: syncBottle, appID: syncAppID)
+                let result = try await SteamCloudWebAPI.shared.syncBeforeLaunch(
+                    appID: syncAppID,
+                    saveDir: saveDir,
+                    bottle: syncBottle
+                )
+                cloudSyncStatus = result.filesDownloaded > 0
+                    ? "Imported \(result.filesDownloaded) files from Steam Cloud"
                     : "No cloud saves found"
             } catch {
                 cloudSyncStatus = "Sync failed: \(error.localizedDescription)"
@@ -745,21 +751,25 @@ struct GameDetailPanel: View {
         }
     }
 
-    // Find save directory: userdata inside bottle (Steam standard) or Goldberg local
     private var savesDirectory: URL? {
-        // 1. Goldberg local saves (if active)
-        // 1. gbe_fork saves (GSE Saves/<appID>/remote/)
-        let gbePath = SteamCloudSyncService.shared.gbeSavePath(bottle: bottle, appID: game.appid)
-        if FileManager.default.fileExists(atPath: gbePath.path(percentEncoded: false)) {
-            return gbePath
-        }
-        // 2. Wine Steam userdata (cloud-synced saves)
-        if let cloudPath = SteamCloudSyncService.shared.wineUserDataRemote(
-            bottle: bottle, appID: game.appid, steamID: steamUserID
-        ), FileManager.default.fileExists(atPath: cloudPath.path(percentEncoded: false)) {
-            return cloudPath
+        // Goldberg saves
+        let goldbergDir = SteamCloudWebAPI.goldbergSaveDir(bottle: bottle, appID: game.appid)
+        if FileManager.default.fileExists(atPath: goldbergDir.path(percentEncoded: false)) {
+            return goldbergDir
         }
         return nil
+    }
+
+    private static func countFiles(in dir: URL) -> Int {
+        guard let enumerator = FileManager.default.enumerator(
+            at: dir, includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return 0 }
+        var count = 0
+        while let file = enumerator.nextObject() as? URL {
+            let vals = try? file.resourceValues(forKeys: [.isRegularFileKey])
+            if vals?.isRegularFile == true { count += 1 }
+        }
+        return count
     }
 
     private var backupDir: URL {
@@ -920,7 +930,6 @@ struct GameDetailPanel: View {
     }
 
     private func installGame() {
-        guard !steamUsername.isEmpty else { return }
         installState = .preparing
         installLog = ""
         launchError = nil
@@ -928,10 +937,6 @@ struct GameDetailPanel: View {
         let username = steamUsername
         // Per-appID directory avoids any name-matching complexity
         let installDir = SteamCMDService.gameInstallDir(appID: appID)
-        let expectedBytes: Double = {
-            let size = gameSizeGB ?? 5.0
-            return (size > 0 ? size : 5.0) * 1024 * 1024 * 1024
-        }()
 
         Task {
             do {
@@ -947,8 +952,6 @@ struct GameDetailPanel: View {
                     Task { @MainActor in
                         installLog += line
 
-                        // Parse SteamCMD progress from output
-                        // SteamCMD outputs lines like "Update state (0x61) downloading, progress: 45.23 (123456789 / 273456789)"
                         if let range = line.range(of: "progress:") {
                             let after = line[range.upperBound...]
                             let parts = after.trimmingCharacters(in: .whitespaces)
@@ -965,7 +968,6 @@ struct GameDetailPanel: View {
                                     return
                                 }
                             }
-                            // Fallback: use percentage from "progress: XX.XX"
                             if let pct = Double(parts[0].trimmingCharacters(in: .whitespaces)) {
                                 let p = min(0.99, max(0.01, pct / 100.0))
                                 installState = .downloading(progress: p)
@@ -986,6 +988,7 @@ struct GameDetailPanel: View {
     private func launchGame() {
         launchError = nil
         let appID = game.appid
+        let username = steamUsername
         Task {
             let installDir = SteamCMDService.gameInstallDir(appID: appID)
 
@@ -996,32 +999,54 @@ struct GameDetailPanel: View {
             }
 
             let exeDir = exeURL.deletingLastPathComponent()
-            let sharedBottle = Bottle(bottleUrl: BottleData.sharedDir)
 
-            // --- Native Steam: prepare Goldberg with real credentials ---
-            guard SteamSessionManager.shared.isLoggedIn else {
-                launchError = "Not logged in. Sign in to Steam in Settings."
-                return
-            }
+            // Always write steam_appid.txt at the game root
+            try? "\(appID)\n".write(
+                to: installDir.appending(path: "steam_appid.txt"),
+                atomically: true, encoding: .utf8
+            )
 
-            do {
-                try await SteamIPCBridge.shared.prepareForLaunch(
-                    appID: appID,
-                    bottle: sharedBottle,
-                    gameDir: installDir,
-                    exeDir: exeDir
+            // --- Goldberg Steam Emulator (DRM bypass) ---
+            var steamStubActive = false
+
+            if goldbergEnabled {
+                do {
+                    try await GoldbergService.shared.ensureInstalled()
+                    try GoldbergService.shared.apply(
+                        to: exeDir, gameDir: installDir, appID: appID,
+                        username: username.isEmpty ? "Player" : username,
+                        steamID: UserDefaults.standard.string(forKey: "steamUserID") ?? ""
+                    )
+                } catch {
+                    launchError = "Goldberg: \(error.localizedDescription)"
+                    return
+                }
+
+                do {
+                    try await SteamlessService.shared.stripIfNeeded(exe: exeURL)
+                } catch {
+                    launchError = "Steamless: \(error.localizedDescription)"
+                    return
+                }
+
+                steamStubActive = SteamlessService.shared.hasSteamStub(exe: exeURL)
+                    && !SteamlessService.shared.isStripped(exe: exeURL)
+            } else {
+                // Restore originals if Goldberg was previously active
+                GoldbergService.shared.remove(from: exeDir, gameDir: installDir)
+                SteamlessService.shared.restore(exe: exeURL)
+                try? "\(appID)\n".write(
+                    to: exeDir.appending(path: "steam_appid.txt"),
+                    atomically: true, encoding: .utf8
                 )
-            } catch {
-                launchError = "Steam setup: \(error.localizedDescription)"
-                return
             }
 
             // --- Wine prefix init ---
-            let system32 = sharedBottle.url
+            let system32 = bottle.url
                 .appending(path: "drive_c").appending(path: "windows").appending(path: "system32")
             if !FileManager.default.fileExists(atPath: system32.path(percentEncoded: false)) {
                 do {
-                    _ = try await Wine.runWine(["wineboot", "-u"], bottle: sharedBottle)
+                    _ = try await Wine.runWine(["wineboot", "-u"], bottle: bottle)
                 } catch {
                     launchError = "Wine initialisation failed: \(error.localizedDescription)"
                     return
@@ -1045,14 +1070,14 @@ struct GameDetailPanel: View {
                     for vcExe in vcExes {
                         _ = try? await Wine.runWine(
                             [vcExe.path(percentEncoded: false), "/q", "/norestart"],
-                            bottle: sharedBottle
+                            bottle: bottle
                         )
                     }
                     let dxSetup = redistDir.appending(path: "DirectX").appending(path: "Jun2010").appending(path: "DXSETUP.exe")
                     if FileManager.default.fileExists(atPath: dxSetup.path(percentEncoded: false)) {
                         _ = try? await Wine.runWine(
                             [dxSetup.path(percentEncoded: false), "/silent"],
-                            bottle: sharedBottle
+                            bottle: bottle
                         )
                     }
                 }
@@ -1060,30 +1085,37 @@ struct GameDetailPanel: View {
                 if FileManager.default.fileExists(atPath: ue4Prereq.path(percentEncoded: false)) {
                     _ = try? await Wine.runWine(
                         [ue4Prereq.path(percentEncoded: false), "/quiet", "/norestart"],
-                        bottle: sharedBottle
+                        bottle: bottle
                     )
                 }
                 try? "".write(to: redistMarker, atomically: true, encoding: .utf8)
             }
 
-            // --- DXVK --- (always enable for Steam games — D3D11 needs Metal translation)
-            try? Wine.enableDXVK(bottle: sharedBottle)
+            // --- DXVK ---
+            if bottle.settings.dxvk {
+                do {
+                    try Wine.enableDXVK(bottle: bottle)
+                } catch {
+                    launchError = "DXVK not available: \(error.localizedDescription). Try WineD3D."
+                    return
+                }
+            }
 
             // --- Virtual desktop ---
             if windowedMode {
                 _ = try? await Wine.runWine([
                     "reg", "add", "HKCU\\Software\\Wine\\Explorer",
                     "/v", "Desktop", "/t", "REG_SZ", "/d", "Default", "/f"
-                ], bottle: sharedBottle)
+                ], bottle: bottle)
                 _ = try? await Wine.runWine([
                     "reg", "add", "HKCU\\Software\\Wine\\Explorer\\Desktops",
                     "/v", "Default", "/t", "REG_SZ", "/d", "1280x720", "/f"
-                ], bottle: sharedBottle)
+                ], bottle: bottle)
             } else {
                 _ = try? await Wine.runWine([
                     "reg", "delete", "HKCU\\Software\\Wine\\Explorer",
                     "/v", "Desktop", "/f"
-                ], bottle: sharedBottle)
+                ], bottle: bottle)
             }
 
             // --- Auto-backup saves ---
@@ -1097,28 +1129,44 @@ struct GameDetailPanel: View {
                 }
             }
 
+            // --- Kill lingering Wine Steam processes (interfere with Goldberg) ---
+            if goldbergEnabled && !steamStubActive {
+                let killProc = Process()
+                killProc.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+                killProc.arguments = ["-9", "-f", "steam\\.exe|steamwebhelper\\.exe|steamservice\\.exe"]
+                try? killProc.run()
+                killProc.waitUntilExit()
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+
             // --- Steam Cloud: download saves before launch ---
-            let cloudSaveDir = SteamCloudWebAPI.goldbergSaveDir(bottle: sharedBottle, appID: appID)
+            let cloudSaveDir = SteamCloudWebAPI.goldbergSaveDir(bottle: bottle, appID: appID)
             do {
-                let result = try await SteamCloudWebAPI.shared.syncBeforeLaunch(
+                let dlResult = try await SteamCloudWebAPI.shared.syncBeforeLaunch(
                     appID: appID,
-                    saveDir: cloudSaveDir
+                    saveDir: cloudSaveDir,
+                    bottle: bottle
                 )
-                if result.filesDownloaded > 0 {
-                    print("[SteamCloud] Downloaded \(result.filesDownloaded) save files before launch")
+                if dlResult.filesDownloaded > 0 {
+                    print("[SteamCloud] Downloaded \(dlResult.filesDownloaded) save files before launch")
                 }
             } catch {
-                // Non-fatal — game can still launch without cloud saves
                 print("[SteamCloud] Pre-launch sync failed: \(error.localizedDescription)")
             }
 
             // --- Launch ---
-            let steamEnv = SteamIPCBridge.shared.launchEnvironment(appID: appID)
+            var steamEnv: [String: String] = [
+                "SteamAppId": "\(appID)",
+                "SteamGameId": "\(appID)"
+            ]
+            if goldbergEnabled && !steamStubActive {
+                steamEnv["WINEDLLOVERRIDES"] = "steam.exe=d;steamwebhelper.exe=d"
+            }
 
             do {
                 for await _ in try Wine.runWineProcess(
                     args: [exeURL.path(percentEncoded: false)],
-                    bottle: sharedBottle,
+                    bottle: bottle,
                     workingDirectory: exeDir,
                     environment: steamEnv
                 ) { }
@@ -1129,12 +1177,15 @@ struct GameDetailPanel: View {
 
             // --- Steam Cloud: upload saves after game exit ---
             do {
-                let result = try await SteamCloudWebAPI.shared.syncAfterExit(
+                let autoCloudDirs = SteamCloudWebAPI.findAutoCloudDirs(bottle: bottle, appID: appID)
+                let ulResult = try await SteamCloudWebAPI.shared.syncAfterExit(
                     appID: appID,
-                    saveDir: cloudSaveDir
+                    saveDir: cloudSaveDir,
+                    bottle: bottle,
+                    autoCloudDirs: autoCloudDirs
                 )
-                if result.filesUploaded > 0 {
-                    print("[SteamCloud] Uploaded \(result.filesUploaded) save files after exit")
+                if ulResult.filesUploaded > 0 {
+                    print("[SteamCloud] Uploaded \(ulResult.filesUploaded) save files after exit")
                 }
             } catch {
                 print("[SteamCloud] Post-exit sync failed: \(error.localizedDescription)")

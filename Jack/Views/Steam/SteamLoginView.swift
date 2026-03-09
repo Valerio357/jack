@@ -26,6 +26,12 @@ struct SteamLoginView: View {
     @State private var logoScale: CGFloat = 0.8
     @State private var logoOpacity: Double = 0
 
+    // Login form fields
+    @State private var username = ""
+    @State private var password = ""
+    @State private var twoFactorCode = ""
+    @State private var needs2FA = false
+
     var body: some View {
         ZStack {
             Color.jackBackground.ignoresSafeArea()
@@ -52,34 +58,51 @@ struct SteamLoginView: View {
                         .font(.system(size: 36, weight: .bold, design: .default))
                         .foregroundStyle(.white)
 
-                    Text("Your Steam library on Mac")
+                    Text("Sign in with your Steam account")
                         .font(.jackBody)
                         .foregroundStyle(.white.opacity(0.6))
                         .multilineTextAlignment(.center)
                 }
 
-                Button {
-                    login()
-                } label: {
-                    HStack(spacing: 8) {
-                        if isLoggingIn {
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                                .tint(.white)
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "person.fill")
+                // Login form
+                VStack(spacing: 12) {
+                    TextField("Username", text: $username)
+                        .textFieldStyle(.roundedBorder)
+                        .textContentType(.username)
+                        .frame(maxWidth: 280)
+
+                    SecureField("Password", text: $password)
+                        .textFieldStyle(.roundedBorder)
+                        .textContentType(.password)
+                        .frame(maxWidth: 280)
+
+                    TextField("Steam Guard Code", text: $twoFactorCode)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 280)
+
+                    Button {
+                        login()
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isLoggingIn {
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                    .tint(.white)
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "person.fill")
+                            }
+                            Text(isLoggingIn ? "Signing in…" : "Sign in")
+                                .fontWeight(.semibold)
                         }
-                        Text(isLoggingIn ? "Signing in…" : "Sign in with Steam")
-                            .fontWeight(.semibold)
+                        .frame(minWidth: 200, minHeight: 44)
+                        .background(Color.jackAccent)
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
-                    .frame(minWidth: 200, minHeight: 44)
-                    .background(Color.jackAccent)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .buttonStyle(.plain)
+                    .disabled(isLoggingIn || username.isEmpty || password.isEmpty)
                 }
-                .buttonStyle(.plain)
-                .disabled(isLoggingIn)
 
                 if let errorMessage {
                     Text(errorMessage)
@@ -98,12 +121,52 @@ struct SteamLoginView: View {
     private func login() {
         isLoggingIn = true
         errorMessage = nil
+        let pw = password
+        let code = twoFactorCode
+        let user = username
         Task {
             defer { isLoggingIn = false }
+
             do {
-                steamUserID = try await SteamAuthService.shared.login()
-            } catch SteamAuthError.cancelled {
-                // nothing
+                // Step 1: SteamCMD login first to cache credentials (uses the 2FA code)
+                do {
+                    try await SteamCMDService.shared.ensureInstalled()
+                    _ = try await SteamCMDService.shared.login(
+                        username: user,
+                        password: pw,
+                        steamGuardCode: code.isEmpty ? nil : code
+                    )
+                } catch {
+                    // Non-critical
+                }
+
+                // Step 2: jacksteam.py login (Web API auth — gets its own 2FA validation)
+                let result = try await SteamNativeService.shared.login(
+                    username: user,
+                    password: pw,
+                    twoFactorCode: code.isEmpty ? nil : code
+                )
+
+                let session = SteamSessionManager.shared
+                session.saveSession(result: result)
+                session.savePassword(pw)
+                steamUserID = result.steamID64
+
+                // Clear sensitive fields
+                password = ""
+                twoFactorCode = ""
+            } catch let error as SteamNativeService.SteamNativeError {
+                switch error {
+                case .loginFailed(let msg):
+                    if msg.contains("2FA") || msg.contains("code required") {
+                        needs2FA = true
+                        errorMessage = "Enter your Steam Guard code and try again."
+                    } else {
+                        errorMessage = msg
+                    }
+                default:
+                    errorMessage = error.localizedDescription
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -113,5 +176,5 @@ struct SteamLoginView: View {
 
 #Preview {
     SteamLoginView()
-        .frame(width: 480, height: 500)
+        .frame(width: 480, height: 600)
 }

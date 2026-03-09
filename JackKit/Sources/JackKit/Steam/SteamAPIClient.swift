@@ -41,44 +41,144 @@ public struct SteamAPIClient: Sendable {
         return URLSession(configuration: config)
     }()
 
-    // MARK: - Owned games (no API key needed)
+    // MARK: - Owned games
 
-    /// Fetch owned games using SteamCMD licenses_print + Steam Store for names.
+    private static let skipPatterns = [
+        " server", " dedicated server", "redistributable", "commonredist",
+        "steamworks", "proton ", "steam linux runtime", "soundtrack", "art book"
+    ]
+
+    private static func isNonGame(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return skipPatterns.contains { lower.contains($0) }
+    }
+
+    /// Fetch owned games. Tries Steam XML profile (public), then SteamCMD, then local scan.
     public static func getOwnedGames(steamID64: String, username: String) async throws -> [SteamGame] {
-        // Get owned app IDs from SteamCMD
-        let appIDs = try await SteamCMDService.shared.getOwnedAppIDs(username: username)
-        guard !appIDs.isEmpty else {
-            throw SteamAPIError.noGamesFound
+        // 1. Steam public XML profile (no API key, no SteamCMD)
+        if let xmlGames = try? await fetchGamesFromXML(steamID64: steamID64), !xmlGames.isEmpty {
+            // Merge with locally installed games not in the XML list
+            let xmlIDs = Set(xmlGames.map(\.appid))
+            let localOnly = scanInstalledGames().filter { !xmlIDs.contains($0.appid) }
+            if !localOnly.isEmpty {
+                let nameMap = await resolveAppNames(appIDs: localOnly.map(\.appid))
+                let resolved = localOnly.compactMap { g -> SteamGame? in
+                    guard let name = nameMap[g.appid], !name.isEmpty, !isNonGame(name) else { return nil }
+                    return SteamGame(appid: g.appid, name: name, playtimeForever: 0, imgIconUrl: nil)
+                }
+                return (xmlGames + resolved).sorted {
+                    $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+            }
+            return xmlGames
         }
 
-        // Resolve names via Steam Store API (cached to disk)
-        let nameMap = await resolveAppNames(appIDs: appIDs)
+        // 2. JackSteam licenses via CM network (works with private profiles)
+        if SteamSessionManager.shared.isLoggedIn,
+           let appIDs = try? await SteamNativeService.shared.getOwnedAppIDs(),
+           !appIDs.isEmpty {
+            let nameMap = await resolveAppNames(appIDs: appIDs)
+            let games = appIDs.compactMap { id -> SteamGame? in
+                guard let name = nameMap[id], !name.isEmpty, !isNonGame(name) else { return nil }
+                return SteamGame(appid: id, name: name, playtimeForever: 0, imgIconUrl: nil)
+            }
+            if !games.isEmpty {
+                // Merge with locally installed games
+                let ownedIDs = Set(games.map(\.appid))
+                let localOnly = scanInstalledGames().filter { !ownedIDs.contains($0.appid) }
+                if !localOnly.isEmpty {
+                    let localNames = await resolveAppNames(appIDs: localOnly.map(\.appid))
+                    let resolved = localOnly.compactMap { g -> SteamGame? in
+                        guard let name = localNames[g.appid], !name.isEmpty, !isNonGame(name) else { return nil }
+                        return SteamGame(appid: g.appid, name: name, playtimeForever: 0, imgIconUrl: nil)
+                    }
+                    return (games + resolved).sorted {
+                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    }
+                }
+                return games.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            }
+        }
+
+        // 3. SteamCMD licenses_print (requires cached credentials)
+        if SteamCMDService.shared.isInstalled,
+           let appIDs = try? await SteamCMDService.shared.getOwnedAppIDs(username: username),
+           !appIDs.isEmpty {
+            let nameMap = await resolveAppNames(appIDs: appIDs)
+            let games = appIDs.compactMap { id -> SteamGame? in
+                guard let name = nameMap[id], !name.isEmpty, !isNonGame(name) else { return nil }
+                return SteamGame(appid: id, name: name, playtimeForever: 0, imgIconUrl: nil)
+            }
+            if !games.isEmpty {
+                return games.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            }
+        }
+
+        // 4. Scan locally installed games
+        let local = scanInstalledGames()
+        if !local.isEmpty {
+            let nameMap = await resolveAppNames(appIDs: local.map(\.appid))
+            let games = local.compactMap { g -> SteamGame? in
+                let name = nameMap[g.appid] ?? g.name
+                guard !name.isEmpty, name != "App \(g.appid)" || nameMap[g.appid] == nil else {
+                    // Use "App {id}" only if Store API also failed
+                    return SteamGame(appid: g.appid, name: nameMap[g.appid] ?? g.name, playtimeForever: 0, imgIconUrl: nil)
+                }
+                return SteamGame(appid: g.appid, name: name, playtimeForever: 0, imgIconUrl: nil)
+            }
+            return games.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+
+        throw SteamAPIError.noGamesFound
+    }
+
+    /// Fetch games from Steam's public XML profile.
+    private static func fetchGamesFromXML(steamID64: String) async throws -> [SteamGame] {
+        let urlString = "https://steamcommunity.com/profiles/\(steamID64)/games?xml=1"
+        guard let url = URL(string: urlString) else { return [] }
+
+        let (data, _) = try await session.data(from: url)
+        guard let xml = String(data: data, encoding: .utf8) else { return [] }
+
+        if xml.contains("<privacyState>private</privacyState>") { return [] }
+        guard xml.contains("<game>") else { return [] }
 
         var games: [SteamGame] = []
-        for appID in appIDs {
-            let name = nameMap[appID] ?? ""
-            // Skip obvious non-games
-            if !name.isEmpty {
-                let lower = name.lowercased()
-                if lower.hasSuffix(" server") || lower.hasSuffix(" dedicated server")
-                    || lower.contains("redistributable") || lower.contains("commonredist")
-                    || lower.hasPrefix("steamworks") || lower.contains("proton ")
-                    || lower.contains("steam linux runtime")
-                    || lower.contains("soundtrack") || lower.contains("art book") {
-                    continue
-                }
-            } else {
-                continue // Skip unknown apps (likely tools/DLCs)
-            }
-            games.append(SteamGame(
-                appid: appID,
-                name: name,
-                playtimeForever: 0,
-                imgIconUrl: nil
-            ))
+        for block in xml.components(separatedBy: "<game>").dropFirst() {
+            guard let appIDStr = xmlValue(block, "appID"),
+                  let appID = Int(appIDStr) else { continue }
+            let rawName = xmlValue(block, "name") ?? ""
+            let name = rawName
+                .replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&lt;", with: "<")
+                .replacingOccurrences(of: "&gt;", with: ">")
+                .replacingOccurrences(of: "&#39;", with: "'")
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .replacingOccurrences(of: "<![CDATA[", with: "")
+                .replacingOccurrences(of: "]]>", with: "")
+            guard !name.isEmpty, !isNonGame(name) else { continue }
+            games.append(SteamGame(appid: appID, name: name, playtimeForever: 0, imgIconUrl: nil))
         }
-
         return games.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private static func xmlValue(_ block: String, _ tag: String) -> String? {
+        guard let s = block.range(of: "<\(tag)>"),
+              let e = block.range(of: "</\(tag)>") else { return nil }
+        return String(block[s.upperBound..<e.lowerBound])
+    }
+
+    /// Scan local SteamCMD/games/ for installed games.
+    private static func scanInstalledGames() -> [SteamGame] {
+        let gamesDir = BottleData.steamCMDDir.appending(path: "games")
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: gamesDir, includingPropertiesForKeys: nil
+        ) else { return [] }
+        return contents.compactMap { dir in
+            guard let appID = Int(dir.lastPathComponent),
+                  SteamCMDService.findGameExecutable(in: dir) != nil else { return nil }
+            return SteamGame(appid: appID, name: "App \(appID)", playtimeForever: 0, imgIconUrl: nil)
+        }
     }
 
     // MARK: - App Name Resolution (via Steam Store API, cached to disk)
