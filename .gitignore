@@ -91,4 +91,22 @@ fastlane/test_output
 # https://github.com/johnno1962/injectionforxcode
 
 iOSInjectionProject/
-\n# Jack Specific\n.DS_Store\n*.xcworkspace\n!*.xcworkspacedata\n
+
+# Jack Specific
+downloads/
+
+# VM artifacts (large binary files)
+*.qcow2
+*.iso
+*.vhdx
+*.img
+*.fd
+JackGPU/vm/virtio-win.iso
+
+# IDE
+.vscode/
+.claude/
+
+# Stray root files
+/efi-vars.fd
+/windows-arm64.qcow2

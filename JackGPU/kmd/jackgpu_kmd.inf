@@ -1,0 +1,84 @@
+;
+; jackgpu_kmd.inf — JackGPU WDDM Display-Only Driver
+;
+; Installs as a display-only driver for virtio-gpu PCI device.
+; Target: Windows 10/11 ARM64 and x64
+;
+; SPDX-License-Identifier: GPL-3.0-or-later
+;
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = Display
+ClassGuid   = {4d36e968-e325-11ce-bfc1-08002be10318}
+Provider    = %ManufacturerName%
+CatalogFile = jackgpu_kmd.cat
+DriverVer   = 03/11/2026,1.0.0.0
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13  ; Driver Store
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+jackgpu_kmd.sys = 1
+
+; ── Manufacturer ─────────────────────────────────────────────────
+
+[Manufacturer]
+%ManufacturerName% = Standard,NTarm64,NTamd64
+
+[Standard.NTarm64]
+%DeviceName% = JackGPU_Install, PCI\VEN_1AF4&DEV_1050  ; virtio-gpu 1.0
+%DeviceName% = JackGPU_Install, PCI\VEN_1AF4&DEV_1040&SUBSYS_00101AF4  ; transitional GPU
+
+[Standard.NTamd64]
+%DeviceName% = JackGPU_Install, PCI\VEN_1AF4&DEV_1050
+%DeviceName% = JackGPU_Install, PCI\VEN_1AF4&DEV_1040&SUBSYS_00101AF4
+
+; ── Install Section ──────────────────────────────────────────────
+
+[JackGPU_Install]
+FeatureScore = F8
+CopyFiles    = JackGPU_CopyFiles
+
+[JackGPU_CopyFiles]
+jackgpu_kmd.sys
+
+; ── Services ─────────────────────────────────────────────────────
+
+[JackGPU_Install.Services]
+AddService = JackGPU, 0x00000002, JackGPU_Service
+
+[JackGPU_Service]
+DisplayName    = %ServiceName%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\jackgpu_kmd.sys
+LoadOrderGroup = Video
+
+; ── Registry ─────────────────────────────────────────────────────
+
+[JackGPU_Install.HW]
+AddReg = JackGPU_HWAddReg
+
+[JackGPU_HWAddReg]
+; DXGK display-only driver settings
+HKR,, "UpperFilters", 0x00010000, "BasicDisplay"
+HKR,, "InstalledDisplayDrivers", 0x00010000, "jackgpu_kmd"
+HKR,, "UserModeDriverName", 0x00010000, ""
+HKR,, "UserModeDriverNameWow", 0x00010000, ""
+
+; Disable power management for now
+HKR,, "PowerPolicyOwner", 0x00010001, 0
+
+; ── Strings ──────────────────────────────────────────────────────
+
+[Strings]
+ManufacturerName = "Jack Project"
+DeviceName       = "JackGPU Virtual Display Adapter"
+ServiceName      = "JackGPU Display-Only Driver"
+DiskName         = "JackGPU Driver Installation Disk"

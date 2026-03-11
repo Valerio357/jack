@@ -303,6 +303,140 @@ The pieces for VM-based gaming with anti-cheat on Apple Silicon **already exist 
 
 ---
 
+## JackGPU — Custom Implementation (In Progress)
+
+Rather than waiting for viogpu3d or other community drivers, we are building our own complete GPU paravirtualization stack from scratch. This gives us full control and removes dependencies on third-party driver timelines.
+
+### Architecture
+
+```
+Windows ARM64 VM (QEMU + Apple Hypervisor.framework)
+  │
+  Game.exe (DirectX 11/12)
+  │
+  DXVK (DirectX → Vulkan)
+  │
+  JackGPU Vulkan ICD (jackgpu.dll) ←── userspace, Windows
+  │  Implements Vulkan 1.3 ICD interface
+  │  Encodes Vulkan calls via Venus wire protocol
+  │  Communicates with kernel via D3DKMTEscape
+  │
+  JackGPU KMD (jackgpu_kmd.sys) ←── kernel, Windows
+  │  WDDM Display-Only driver (KMDOD)
+  │  Translates escape commands → virtio-gpu virtqueue commands
+  │  Manages shared memory blobs, ring buffers, contexts
+  │
+  ─── VM / host boundary (virtio-gpu PCI, shared memory) ───
+  │
+  virglrenderer + Venus host (deserializes Vulkan)
+  │
+  MoltenVK (Vulkan → Metal)
+  │
+  Apple Silicon GPU (native Metal)
+```
+
+### Components Built
+
+#### 1. JackGPU Vulkan ICD (`JackGPU/driver/`) — Complete
+
+A full Windows Vulkan ICD (Installable Client Driver) that the Vulkan loader discovers and uses.
+
+- **ICD entry points** (`icd.c`): `vk_icdNegotiateLoaderICDInterfaceVersion` (v5), `vk_icdGetInstanceProcAddr`, `vk_icdGetPhysicalDeviceProcAddr`
+- **63 Vulkan functions** implemented across instance, physical device, device, queue, memory, command buffer, sync, and dispatch
+- **Venus wire protocol** encoder/decoder (`venus/encoder.c`, `venus/decoder.c`): serializes all Vulkan commands into the Venus binary format (little-endian, 4-byte aligned, 64-bit object IDs)
+- **Transport layer** (`transport/`): ring buffer protocol matching Mesa's `vn_ring`, D3DKMTEscape wrapper for kernel communication, blob resource management
+- **ICD manifest** (`manifest/jackgpu_x64.json`): Vulkan loader discovers the driver via this JSON file
+- Compiles on macOS (stub transport) and Windows (real D3DKMT transport)
+
+**Vulkan coverage**: instance creation/destruction, physical device enumeration/properties/features/memory/queues, device creation, queue submit, memory allocation/mapping, buffers, images, image views, samplers, shader modules, render passes, framebuffers, graphics/compute pipelines, pipeline layouts, descriptor sets/pools/layouts, command buffers (bindPipeline, bindVertexBuffers, bindIndexBuffer, draw, drawIndexed, dispatch, copyBuffer, copyImage, blitImage, copyBufferToImage, pipelineBarrier, beginRenderPass, endRenderPass, pushConstants), fences, semaphores, swapchain (KHR).
+
+#### 2. JackGPU WDDM Kernel Driver (`JackGPU/kmd/`) — Complete
+
+A WDDM KMDOD (Kernel-Mode Display-Only Driver) for the virtio-gpu PCI device.
+
+- **DriverEntry** (`jackgpu_kmd.c`): Registers via `DxgkInitializeDisplayOnlyDriver` with all required DDI callbacks
+- **Virtio PCI initialization** (`virtqueue.c`): Parses PCI capabilities, performs full virtio handshake (reset → acknowledge → driver → features_ok → driver_ok), sets up virtqueues with physically contiguous DMA memory
+- **Virtqueue management**: Lock-free descriptor ring, available/used ring protocol, interrupt-driven completion with DPC processing
+- **DxgkDdiEscape handler** (`escape.c`): 12 escape commands matching the ICD's D3DKMTEscape interface:
+  - `GET_CAPSET` → `VIRTIO_GPU_CMD_GET_CAPSET`
+  - `CREATE/DESTROY_CONTEXT` → `VIRTIO_GPU_CMD_CTX_CREATE/DESTROY`
+  - `CREATE_BLOB` → `VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB` with scatter-gather backing
+  - `MAP_BLOB` → MDL mapping into user address space via `MmMapLockedPagesSpecifyCache`
+  - `UNMAP_BLOB` / `DESTROY_RESOURCE` → cleanup + `VIRTIO_GPU_CMD_RESOURCE_UNREF`
+  - `EXECBUFFER` → `VIRTIO_GPU_CMD_SUBMIT_3D` (Venus command passthrough)
+  - `CREATE_RING` / `SET_REPLY_STREAM` → `VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE`
+  - `NOTIFY_RING` → zero-length SUBMIT_3D ping to wake host renderer
+- **Resource tracking**: Up to 1024 concurrent blob resources with kernel↔user mapping
+- **INF file** (`jackgpu_kmd.inf`): Targets `PCI\VEN_1AF4&DEV_1050` (virtio-gpu 1.0), supports ARM64 and x64
+- **Build system**: WDK Makefile + packaging/signing instructions
+
+#### 3. Venus Wire Protocol (`JackGPU/venus/`) — Complete
+
+Encoder and decoder for the Venus binary protocol (matches Mesa's implementation).
+
+- Encodes: uint32, int32, uint64, float, bytes, handles, array sizes, pointers, and all complex Vulkan structs (`VkInstanceCreateInfo`, `VkDeviceCreateInfo`, `VkBufferCreateInfo`, `VkImageCreateInfo`, `VkShaderModuleCreateInfo`, `VkSubmitInfo`, `VkRenderPassBeginInfo`, etc.)
+- Decodes: reply headers, `VkPhysicalDeviceProperties`, `VkPhysicalDeviceFeatures`, `VkPhysicalDeviceMemoryProperties`, `VkQueueFamilyProperties`, `VkMemoryRequirements`
+- 80+ Venus command types defined
+
+#### 4. QEMU VM Environment (`JackGPU/vm/`) — In Progress
+
+Windows 11 ARM64 VM running on QEMU with Apple Hypervisor.framework (HVF).
+
+- **QEMU 10.2.1** (ARM64 native via Homebrew) with HVF acceleration
+- **Configuration**: `ramfb` display, NVMe boot disk (128GB), USB-storage for ISOs, virtio-net networking
+- **Windows 11 25H2 ARM64** installation in progress (TPM/SecureBoot bypass via registry)
+- **Shared folder**: virtio-9p mount for game files from host
+- **Port forwarding**: RDP (3389), SSH (2222)
+
+### Why Build From Scratch Instead of Using viogpu3d?
+
+| Factor | viogpu3d | JackGPU |
+|---|---|---|
+| **API level** | OpenGL / D3D10 (VirGL) | Vulkan 1.3 (Venus) |
+| **Status** | Experimental PR, rendering glitches | Purpose-built for our pipeline |
+| **DXVK compatible** | No (needs Vulkan) | Yes (native Vulkan ICD) |
+| **Control** | Depends on upstream maintainers | We own the full stack |
+| **Performance** | VirGL double-translation overhead | Venus near-native Vulkan |
+| **Target** | General purpose | Optimized for gaming + anti-cheat |
+
+viogpu3d provides OpenGL/D3D10 via VirGL — not enough for modern games. JackGPU provides Vulkan directly, which DXVK needs for DirectX 11/12 → Vulkan translation. Building from scratch means we control the entire pipeline and don't depend on upstream driver schedules.
+
+### Possible Evolutions
+
+#### Short-term
+- Complete Windows 11 ARM64 VM setup and driver installation
+- Cross-compile JackGPU ICD as Windows ARM64 DLL
+- Build KMD with WDK in the VM, test-sign, install
+- Validate end-to-end: Vulkan loader → JackGPU ICD → KMD → virtio-gpu → host
+
+#### Medium-term
+- Compile QEMU with virglrenderer + Venus support (custom build with MoltenVK backend)
+- Test with simple Vulkan applications (vkcube, triangle demos)
+- Test DXVK + DirectX games (Cuphead, simple titles first)
+- Add swapchain presentation via virtio-gpu scanout
+
+#### Long-term
+- Integrate VM management into Jack app (one-click Windows VM launch)
+- Automate driver installation in the VM
+- Test with demanding titles (COD Ghosts `iw6mp64_ship.exe`, Sekiro, etc.)
+- Investigate Apple ParavirtualizedGraphics as alternative backend (needs reverse-engineering guest protocol)
+- Optimize Venus encoding/ring buffer for minimal latency
+- Add timeline semaphore support for async compute
+- Explore running anti-cheat games (Ricochet, EAC) — real Windows kernel should satisfy anti-cheat checks
+
+### Current LOC
+
+```
+JackGPU/driver/    — ~1500 LOC (Vulkan ICD, 14 files)
+JackGPU/venus/     — ~1200 LOC (encoder/decoder, 4 files)
+JackGPU/transport/ — ~650 LOC  (ring, virtgpu, d3dkmt, 6 files)
+JackGPU/kmd/       — ~2000 LOC (WDDM kernel driver, 5 files)
+JackGPU/vm/        — ~200 LOC  (QEMU scripts, 2 files)
+Total:             — ~5550 LOC
+```
+
+---
+
 ## References
 
 - [Apple ParavirtualizedGraphics.framework](https://developer.apple.com/documentation/paravirtualizedgraphics)
