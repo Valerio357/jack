@@ -1,0 +1,5 @@
+LIBRARY jackgpu
+EXPORTS
+    vk_icdNegotiateLoaderICDInterfaceVersion
+    vk_icdGetInstanceProcAddr
+    vk_icdGetPhysicalDeviceProcAddr
